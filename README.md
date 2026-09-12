@@ -42,6 +42,8 @@ Fiziğin *hissi* testle doğrulanamaz. Gerçek telefonda bakılacaklar:
 - [ ] Oyun ortasında uygulamayı kapat-aç: kaldığın yerden devam
 - [ ] Oyun bitince tekrar açıldığında ölü tahta gelmiyor
 - [ ] Kapsül açılışı, kopya iadesi, koleksiyondan top seçme
+- [ ] Top uçmazken pil tüketimi: oyun açık dururken telefon ısınmamalı
+- [ ] Tur ortasında ana ekrana çık-dön: oyun kaldığı yerden, sıkışma sayaçları tetiklenmeden
 - [ ] Aydınlık ve koyu tema
 - [ ] Küçük (5") ve büyük (6.7") ekranda tahta sığıyor
 

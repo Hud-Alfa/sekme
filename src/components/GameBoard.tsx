@@ -1,5 +1,5 @@
-import { useCallback, useMemo } from 'react';
-import { View } from 'react-native';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { AppState, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
   runOnJS,
@@ -134,6 +134,11 @@ export function GameBoard({
 
   /* ---- crossing back to JS -------------------------------------------- */
 
+  // The frame loop is only alive while balls are. An always-on callback that
+  // returns early still wakes the UI thread sixty times a second, and on a
+  // phone that is battery and heat spent on deciding to do nothing.
+  const [inFlight, setInFlight] = useState(false);
+
   const finish = useCallback(
     (scored: number, balls: number, gold: number, landing: number) => {
       onTurnComplete({
@@ -152,7 +157,7 @@ export function GameBoard({
 
   /* ---- the frame loop -------------------------------------------------- */
 
-  useFrameCallback((info) => {
+  const frame = useFrameCallback((info) => {
     'worklet';
     if (flying.value === 0) return;
 
@@ -277,9 +282,26 @@ export function GameBoard({
 
     if (moving === 0 && queued === 0) {
       flying.value = 0;
+      runOnJS(setInFlight)(false);
       runOnJS(finish)(scored, ballsGot, goldGot, firstLanding.value);
     }
-  }, true);
+  }, false);
+
+  useEffect(() => {
+    frame.setActive(inFlight);
+  }, [frame, inFlight]);
+
+  useEffect(() => {
+    // A turn that is mid-flight when the app goes away must not keep a frame
+    // loop alive behind a lock screen. It resumes where it left off: `elapsed`
+    // only advances on frames that actually ran, so the anti-stuck timers do
+    // not fire because someone took a phone call.
+    const subscription = AppState.addEventListener('change', (next) => {
+      if (next !== 'active') frame.setActive(false);
+      else if (flying.value === 1) frame.setActive(true);
+    });
+    return () => subscription.remove();
+  }, [frame, flying]);
 
   /* ---- aiming and firing ----------------------------------------------- */
 
@@ -311,6 +333,7 @@ export function GameBoard({
       speedScale.value = 1;
       firstLanding.value = -1;
       flying.value = 1;
+      runOnJS(setInFlight)(true);
     });
 
   /* ---- rendering ------------------------------------------------------- */

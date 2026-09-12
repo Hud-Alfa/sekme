@@ -46,6 +46,11 @@ Rastgelelik enjekte edilir; `npm test` bir tohumdan tüm oyunu tekrar oynar.
 - Hareket kare süresine göre değil **mesafeye göre** alt adımlara bölünür. Böylece hızlı
   top tünellemez ve davranış 60 Hz ile 120 Hz'de aynı olur.
 
+**Kare döngüsü boşa dönmez.** `useFrameCallback` yalnız top uçarken aktif; tur bitince
+kapanıyor, uygulama arkaya alınınca da kapanıyor. Erken `return` eden ama hep açık duran
+bir callback UI iş parçacığını saniyede 60 kez "yapacak bir şey yok" demek için uyandırır
+— telefonda bu pil ve ısı demek.
+
 **Sıkışma koruması** (`curve.ts` → `STUCK`): 10 sn sonra sekme açısına jitter, 12 sn sonra
 hız iki katı, 15 sn sonra tabana çekilir. Özellik değil zorunluluk — yatay sıkışan bir top
 turu hiç bitirmez.
