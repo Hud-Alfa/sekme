@@ -1,46 +1,63 @@
-# Şablon
+# Sekme
 
-Mobil uygulama serisinin ortak iskeleti. Yeni uygulamalar sıfırdan kurulmaz —
-üst klasördeki `/yeni-uygulama` komutuyla buradan türetilir.
+Sonsuz top–blok oyunu. Sürükle, bırak, toplar seksin; bloklardaki sayı sıfırlanınca
+patlasın. Bölüm yok, can yok, reklam yok.
 
-## Ne içerir
+Kod adı **Sekme**. Mağaza adı değişebilir.
 
-- **Tasarım sistemi** (`src/ui/`) — token'lar, tipografi, hareket, 13 bileşen
-- **Duyarlı yerleşim** (`src/ui/useScreen.ts`) — boyut sınıfları, içerik genişliği sınırı,
-  `scale()` ve `hero`; `Screen` tablette içeriği ortalar
-- **Tema** — aydınlık/koyu/sistem, kullanıcı tercihi kalıcı
-- **Yerel veri** (`src/db/`) — SQLite, ileri yönlü migration, dışa aktarma ve tam silme
-- **Bildirim** (`src/lib/notifications.ts`) — günlük yerel hatırlatma, Android 13+ izin akışı dahil
-- **Zorunlu ekranlar** — onboarding, ayarlar, hakkında, gizlilik
-- **Bileşen vitrini** (`/vitrin`) — tasarım sisteminin tamamı tek ekranda
-- **Test koşucusu** (`scripts/check.ts`) — çerçevesiz, `src/lib` aritmetiği için
-- **Yayın altyapısı** — `app.config.ts`, `eas.json`, `docs/gizlilik.md`, `store/`
+## Ne var
+
+- Tek sonsuz akış, tek sayaç: **skor** (kaç tur dayandığın)
+- Blok sayıları ilerlemeye bağlı bir eğriden doğar; her tur biraz daha sert
+- Oynarken toplanan altınla **kapsül** açılır, yeni toplar çıkar
+- **Toplar yalnız görünüm değiştirir** — hiçbiri oyunu kolaylaştırmaz
+- Altın satın alınamaz, yalnız oynayarak kazanılır. Play Billing yok
 
 ## Çalıştırma
 
 ```bash
 npm install
-npx expo start          # Expo Go veya development build ile aç
+npx expo start
 ```
 
 ## Kontroller
 
 ```bash
-npm test                # src/lib içindeki saf mantık
-npm run typecheck       # tsc --noEmit — commit öncesi temiz olmalı
-npm run doctor          # expo-doctor
+npm test                # src/game içindeki saf mantık + fizik matematiği
+npm run typecheck
+npm run doctor
+npm run gorseller
 ```
 
-## Derleme
+## Cihazda elle doğrulama
 
-```bash
-npx eas build --profile preview    --platform android   # cihaza kurulabilir APK
-npx eas build --profile production --platform android   # Play Store için AAB
+Fiziğin *hissi* testle doğrulanamaz. Gerçek telefonda bakılacaklar:
+
+- [ ] **Akıcılık**: 40+ top ekrandayken kare düşüyor mu? Bu oyunun tek gerçek sınavı
+- [ ] Nişan çizgisi parmağı takip ediyor, bırakınca toplar akış hâlinde çıkıyor
+- [ ] Top iki blok arasındaki dikişten geçmiyor (tünelleme)
+- [ ] Yatay sıkışan top: 10 sn'de açı bozuluyor, 12'de hızlanıyor, 15'te dönüyor
+- [ ] `+1` ve altın eşyaları topu saptırmıyor, sadece toplanıyor
+- [ ] Blok kırılınca titreşim var, her sekmede yok (telefon zilleme)
+- [ ] Oyun ortasında uygulamayı kapat-aç: kaldığın yerden devam
+- [ ] Oyun bitince tekrar açıldığında ölü tahta gelmiyor
+- [ ] Kapsül açılışı, kopya iadesi, koleksiyondan top seçme
+- [ ] Aydınlık ve koyu tema
+- [ ] Küçük (5") ve büyük (6.7") ekranda tahta sığıyor
+
+## Yapı
+
+Ayrıntı ve gerekçeler `.claude/CLAUDE.md` içinde.
+
+```
+src/game/curve.ts    bütün denge sayıları — tek ayar noktası
+src/game/physics.ts  saf çarpışma/yansıma, hepsi 'worklet'
+src/game/board.ts    hücreler, satır doğuşu, iniş, hasar
+src/game/gacha.ts    kapsül, garanti, kopya iadesi
+src/game/engine.ts   (state, action) => state
+src/components/GameBoard.tsx  UI thread fizik döngüsü
 ```
 
-Ayrıntı için üst klasördeki `play-store-yayin` skill'ine bak.
-
-## İlkeler
-
-Sunucu yok, hesap yok, reklam yok, takip yok. Her şey cihazda.
-Ortak kurallar üst klasördeki `CLAUDE.md` dosyasında.
+Mağaza metinleri `store/metin.md`, gizlilik politikası `docs/gizlilik.md`. Bu dosya aynı
+zamanda yayınlanan gizlilik sayfasının **kaynağıdır**: `site` deposundaki `npm run uret`
+onu okuyup HTML'e çevirir.

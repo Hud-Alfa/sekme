@@ -1,55 +1,101 @@
-# Şablon — uygulama bağlamı
+# Sekme — uygulama bağlamı
 
-Bu repo bir ürün değil, **diğer uygulamaların türediği iskelet**.
-Ortak kurallar üst klasördeki `CLAUDE.md` içinde; burada yalnız bu repoya özgü olanlar var.
+> Kod adı **Sekme**; mağaza adı değişebilir. Değiştirirken `../DURUM.md` içindeki
+> 7 maddelik listeyi uygula.
 
-## Buraya ne girer, ne girmez
+Ortak kurallar üst klasördeki `CLAUDE.md` içinde. Burada yalnız bu oyuna özgü olanlar var.
 
-**Girer:** serideki *her* uygulamada işine yarayacak şeyler — tasarım sistemi bileşeni,
-tema, veri katmanı, bildirim altyapısı, zorunlu ekranlar, yayın yapılandırması.
+## Tasarım felsefesi
 
-**Girmez:** tek bir uygulamaya özgü alan mantığı, alan tabloları, alan ekranları.
-Bir şeyin şablona mı yoksa uygulamaya mı ait olduğundan emin değilsen uygulamada tut;
-ikinci uygulamada da gerekirse o zaman buraya taşı.
+1. **Akış.** Kontroller pürüzsüz, fizik tutarlı. Oyuncu ekrana dokunduğu an akışa girer.
+2. **Reklamsızlık.** Türün geri kalanındaki "her ölümde video" yok. Kesintisiz oyun.
+3. **Kozmetik motivasyon.** İlerleme oyunu kolaylaştırmakla değil, görsel tatminle gelir.
+   Bütün toplar **aynı** oynar; değişen yalnız görünüş.
+4. **60 FPS pazarlık konusu değil.**
 
-## Dosya haritası
+## Çekirdek döngü
 
-| Yol | İşi |
-|---|---|
-| `src/ui/` | Tasarım sistemi. `index.ts` dışa açılan tek kapı — ekranlar tek tek dosyalardan import etmez |
-| `src/ui/tokens.ts` | `ACCENT` burada. Türetilen her uygulama **yalnız bunu** değiştirir |
-| `src/db/index.ts` | SQLite bağlantısı, ileri yönlü migration, `wipeDatabase`, `exportDatabase` |
-| `src/lib/notifications.ts` | Günlük yerel hatırlatma; izin reddedilirse `false` döner, çağıran ayar anahtarını yalan söyletmez |
-| `src/store/settings.ts` | Kalıcı kullanıcı tercihleri (zustand + `expo-sqlite/kv-store`) |
-| `src/i18n/tr.ts` | Kullanıcıya görünen **tüm** metin |
-| `src/app/vitrin.tsx` | Bileşen vitrini — türetilirken **silinir** |
+Bölüm, aşama, menü yok. Tek sonsuz akış:
 
-## Bu repoda dikkat
+1. Oyuncu sürükleyerek nişan alır; ilk temasa kadar kesik bir çizgi görünür
+2. Bırakınca toplar aynı noktadan peş peşe çıkar. Yerçekimi yok, hız sabit
+3. Toplar bloklardan ve duvarlardan seker; blok sayısı her değmede 1 azalır, sıfırda patlar
+4. `+1` ve altın eşyaları topa değince toplanır — **eşyalar topu saptırmaz**
+5. Bütün toplar tabana dönünce tur biter, tahta bir sıra iner, üstte yeni sıra doğar
+6. Bir blok en alt çizgiye değerse oyun biter
 
-- `src/db/index.ts` içindeki `migrations` dizisi **append-only**. Yayınlanmış bir migration
-  düzenlenmez veya yeri değiştirilmez; yenisi eklenir.
-- `expo-file-system` SDK 54+ API'sini kullanıyor (`File`, `Paths`) — eski
-  `cacheDirectory`/`writeAsStringAsync` çağrıları artık yok.
-- `app.config.ts` içindeki `blockedPermissions` listesi bilerek uzun: kullanılmayan izin
-  Play Store incelemesinde yük, Data Safety formunda da tutarsızlık yaratır.
-- Yeni bileşen yazmadan önce `src/ui/index.ts` listesine bak.
+Ekranda **seviye/bölüm gösterilmez.** Tek sayaç **skor** ve o da tur sayısıdır.
+
+## Pazarlık konusu olmayan teknik kurallar
+
+**Fizik JS iş parçacığında çalışmaz.** Konum, çarpışma ve yansıma tamamen
+`useFrameCallback` içinde, UI iş parçacığında döner. React tur bitene kadar hiçbir şey
+öğrenmez; tek `runOnJS` sonucu karşıya geçirir. Kırk top uçarken kare başına JS'e
+uğramak, oyunla slayt gösterisi arasındaki farktır.
+
+**Tüm top durumu tek bir shared value'da**, düz diziler hâlinde. Top başına shared value
+demek hook'u döngüde çağırmak demekti; diziler ayrıca frame callback'in köprüyü hiç
+geçmeden bütün toplara dokunmasını sağlıyor.
+
+**Çekirdek saf ve testli.** `src/game/` içinde React, SQLite ve animasyon yok.
+Rastgelelik enjekte edilir; `npm test` bir tohumdan tüm oyunu tekrar oynar.
+
+**İki fizik ayrıntısı kritik:**
+- Sekme ekseni, topun gidiş yönünden değil **örtüşme derinliğinden** çıkar. Köşede yönle
+  karar vermek, topu iki blok arasındaki dikişten geçirir.
+- Hareket kare süresine göre değil **mesafeye göre** alt adımlara bölünür. Böylece hızlı
+  top tünellemez ve davranış 60 Hz ile 120 Hz'de aynı olur.
+
+**Sıkışma koruması** (`curve.ts` → `STUCK`): 10 sn sonra sekme açısına jitter, 12 sn sonra
+hız iki katı, 15 sn sonra tabana çekilir. Özellik değil zorunluluk — yatay sıkışan bir top
+turu hiç bitirmez.
+
+## Denge
+
+Bütün denge sayıları **yalnız `src/game/curve.ts` içinde.** Zorluğu değiştirmek kod
+değişikliği değil sayı değişikliğidir — Blok Patlat'taki `scoring.ts` ayrımının aynısı.
+Eğrinin geri gitmediğini ve tek turda dörtten fazla sıçramadığını `npm test` doğruluyor.
+
+## Ekonomi ve kapsül
+
+**Altın yalnızca oynayarak kazanılır. Satın alınamaz ve alınamayacak** — bu seride Play
+Billing yok. Bu, cimri olmanın olağan sebebini ortadan kaldırıyor; o yüzden garanti
+(pity) kuralları bilerek cömert: şanssızlık sabra mal olur, paraya asla.
+
+- Yumuşak garanti: 10 kapsülde bir Destansı veya üzeri
+- Sert garanti: 50 kapsülde bir Efsanevi veya üzeri
+- Kopya çıkarsa nadirliğe göre altın iadesi
+
+**Oranlar kapsül ekranında yazılı.** Play bu şekildeki her sistem için oran açıklaması
+istiyor, ve oranını saklayan bir makinenin saklayacak bir şeyi vardır.
+
+> ⚠️ Yeni bir top eklenirken **oyunu etkileyen** bir özellik verme. Toplar yalnız
+> görünüm. Bu kural bir kere bozulursa koleksiyon "ödeme yapan kazanır"a döner —
+> burada ödeme olmasa bile oynamayan kaybeder demektir.
+
+## Kalıcılık
+
+Her turdan sonra oyun kaydedilir; telefon çalarsa hiçbir şey kaybolmaz. **Bitmiş oyun
+kaydedilmez**, silinir: ölü bir tahtaya açılmak mümkün olabilecek en kötü ilk ekran
+(Blok Patlat'ta öğrenildi).
+
+## Mimari
+
+```
+src/game/curve.ts    bütün denge sayıları — tek ayar noktası
+src/game/physics.ts  saf çarpışma/yansıma; her fonksiyon 'worklet'
+src/game/board.ts    hücreler, satır doğuşu, iniş, hasar
+src/game/balls.ts    top kataloğu ve nadirlikler
+src/game/gacha.ts    kapsül, garanti sayaçları, kopya iadesi
+src/game/engine.ts   (state, action) => state; tur seviyesi
+src/components/GameBoard.tsx  UI thread fizik döngüsü
+src/store/game.ts    kalıcılık ve sıralama. Kural kararı VERMEZ
+```
 
 ## Doğrulama
 
 ```bash
-npm run typecheck && npm run doctor
-npx expo start          # /vitrin ekranını aç, aydınlık ve koyu temada gözden geçir
+npm test && npm run typecheck && npm run doctor
 ```
 
-## Öğrenilmiş tuzaklar
-
-- **Font import'u**: `@expo-google-fonts/<aile>` kök yolundan import etmek 16 ağırlığın ve
-  italiklerin **hepsini** pakete sokar (~2 MB). Her zaman ağırlık alt yolundan import et:
-  `@expo-google-fonts/nunito/700Bold`. `useFonts` ise `expo-font`'tan gelir.
-- **Test sınırı**: `scripts/check.ts` yalnız `src/lib` içindeki saf aritmetiği kontrol eder.
-  React, SQLite veya cihaz gerektiren hiçbir şey buraya girmez — onlar README'deki elle
-  doğrulama listesine yazılır.
-- **Duyarlı yerleşim**: ekrana sığması gereken hiçbir sayı sabit yazılmaz. `useScreen()`
-  (`src/ui/useScreen.ts`) boyut sınıfı, içerik genişliği, `scale()` ve `hero` verir.
-  `Screen` bileşeni tablette içeriği ortalayıp `maxWidth` uygular. Kurallar ve cihaz test
-  matrisi üst klasördeki `duyarli-tasarim` skill'inde.
+Fiziğin *hissi* testle doğrulanamaz; cihazda bakılacaklar README'de.

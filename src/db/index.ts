@@ -3,20 +3,28 @@ import * as SQLite from 'expo-sqlite';
 /**
  * All persistent data lives in one local SQLite file. There is no server and no
  * sync, so migrations only ever run forward on this device.
- *
- * Each app replaces `migrations` with its own schema. The runner itself and the
- * `user_version` bookkeeping stay identical across the series.
  */
 
 const DB_NAME = 'app.db';
 
 /** Append-only. Never edit or reorder a shipped migration — add a new one. */
 const migrations: string[] = [
-  // v1 — the template ships no domain tables; each app adds its own here.
+  // v1 — one key/value table. The game's persistent state is a handful of
+  // counters and two JSON blobs; a schema per field would be ceremony.
   `CREATE TABLE IF NOT EXISTS meta (
      key   TEXT PRIMARY KEY NOT NULL,
      value TEXT NOT NULL
-   );`,
+   );
+
+   -- Finished runs, for the score list.
+   CREATE TABLE IF NOT EXISTS runs (
+     id       TEXT PRIMARY KEY NOT NULL,
+     score    INTEGER NOT NULL,
+     gold     INTEGER NOT NULL,
+     ended_at TEXT NOT NULL
+   );
+
+   CREATE INDEX IF NOT EXISTS idx_runs_score ON runs(score DESC);`,
 ];
 
 let database: SQLite.SQLiteDatabase | null = null;

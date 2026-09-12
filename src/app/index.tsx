@@ -1,41 +1,154 @@
 import { Redirect, useRouter } from 'expo-router';
+import { useEffect, useState } from 'react';
 import { View } from 'react-native';
 
+import { GameBoard } from '@/components/GameBoard';
+import { tr } from '@/i18n/tr';
+import { COLUMNS, ROWS } from '@/game/curve';
+import { formatNumber } from '@/lib/format';
+import { haptic } from '@/lib/haptics';
+import { useGame } from '@/store/game';
 import { useSettings } from '@/store/settings';
-import { Button, Card, Screen, space, Text } from '@/ui';
+import { Button, Screen, Sheet, space, Text, useScreen } from '@/ui';
 
 /**
- * Template home screen. Each app replaces this entirely — what stays is the
- * shape: one screen, one job, the primary action within thumb reach.
+ * The game screen. It owns no rules and no physics — the board component runs
+ * the frame loop on the UI thread, the store owns persistence, and `src/game`
+ * decides everything else.
  */
-export default function HomeScreen() {
+export default function GameScreen() {
   const router = useRouter();
   const onboardingDone = useSettings((s) => s.onboardingDone);
 
+  const load = useGame((s) => s.load);
+  const ready = useGame((s) => s.ready);
+  const game = useGame((s) => s.game);
+  const progress = useGame((s) => s.progress);
+  const newGame = useGame((s) => s.newGame);
+  const resolveTurn = useGame((s) => s.resolveTurn);
+
+  const { content, width: screenWidth, height: screenHeight } = useScreen();
+  const [showOver, setShowOver] = useState(false);
+  const [resolving, setResolving] = useState(false);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  useEffect(() => {
+    if (game?.over) {
+      haptic.error();
+      setShowOver(true);
+    }
+  }, [game?.over]);
+
   if (!onboardingDone) return <Redirect href="/onboarding" />;
 
+  // The board has to fit whatever is left after the header and the launch
+  // strip, on the shortest phone as well as the tallest. Nothing here is a
+  // fixed number: the width is capped by the column and by the height budget.
+  const heightBudget = screenHeight * 0.62;
+  const boardWidth = Math.min(content, (heightBudget / ROWS) * COLUMNS);
+
   return (
-    <Screen scroll>
-      <View style={{ gap: space.xl }}>
-        <View style={{ gap: space.xs }}>
-          <Text variant="title">Şablon</Text>
-          <Text variant="body" color="textMuted">
-            Bu ekran her uygulamada baştan yazılır. Duran şey iskelet: tek ekran, tek iş.
-          </Text>
+    <Screen>
+      <View style={{ flex: 1, gap: space.lg }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.lg }}>
+          <View style={{ flex: 1 }}>
+            <Text variant="caption" color="textMuted">
+              {tr.game.score}
+            </Text>
+            <Text variant="title">{formatNumber(game?.turn ?? 0)}</Text>
+          </View>
+          <View>
+            <Text variant="caption" color="textMuted">
+              {tr.game.best}
+            </Text>
+            <Text variant="heading">{formatNumber(progress.highScore)}</Text>
+          </View>
+          <Button
+            label={`${tr.game.gold} ${formatNumber(progress.gold)}`}
+            variant="secondary"
+            block={false}
+            onPress={() => router.push('/kapsul')}
+          />
         </View>
 
-        <Card>
-          <View style={{ gap: space.md }}>
-            <Text variant="heading">Sıradaki adım</Text>
+        {ready && game === null ? (
+          <View style={{ flex: 1, justifyContent: 'center', gap: space.lg }}>
+            <Text variant="title">{tr.app.name}</Text>
             <Text variant="body" color="textMuted">
-              Tasarım sisteminin tamamını görmek için bileşen vitrinine bak.
+              {tr.game.aimHint}
             </Text>
-            <Button label="Bileşen vitrini" onPress={() => router.push('/vitrin')} />
+            <Button label={tr.game.newGame} onPress={() => void newGame()} />
           </View>
-        </Card>
+        ) : game === null ? null : (
+          <>
+            <GameBoard
+              board={game.board}
+              ballCount={game.balls}
+              launchX={game.launchX}
+              ballId={progress.selected}
+              width={boardWidth}
+              locked={resolving || game.over}
+              onTurnComplete={async (result) => {
+                setResolving(true);
+                await resolveTurn(result);
+                setResolving(false);
+              }}
+            />
 
-        <Button label="Ayarlar" variant="secondary" onPress={() => router.push('/ayarlar')} />
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
+              <Text variant="heading" style={{ flex: 1 }}>
+                ×{formatNumber(game.balls)} {tr.game.balls}
+              </Text>
+              <Text variant="caption" color="textMuted">
+                {tr.game.aimHint}
+              </Text>
+            </View>
+          </>
+        )}
       </View>
+
+      <Sheet
+        visible={showOver}
+        onClose={() => setShowOver(false)}
+        title={tr.game.over}>
+        <View style={{ gap: space.lg }}>
+          <Text variant="body" color="textMuted">
+            {tr.game.overBody}
+          </Text>
+
+          {game !== null && game.turn >= progress.highScore ? (
+            <Text variant="heading" color="accent">
+              {tr.game.newRecord}
+            </Text>
+          ) : null}
+
+          <Text variant="title">
+            {tr.game.score}: {formatNumber(game?.turn ?? 0)}
+          </Text>
+          <Text variant="body" color="textMuted">
+            {tr.game.goldEarned}: {formatNumber(game?.gold ?? 0)}
+          </Text>
+
+          <Button
+            label={tr.game.again}
+            onPress={async () => {
+              setShowOver(false);
+              await newGame();
+            }}
+          />
+          <Button
+            label={tr.capsule.title}
+            variant="secondary"
+            onPress={() => {
+              setShowOver(false);
+              router.push('/kapsul');
+            }}
+          />
+        </View>
+      </Sheet>
     </Screen>
   );
 }
