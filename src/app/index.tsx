@@ -9,7 +9,7 @@ import { formatNumber } from '@/lib/format';
 import { haptic } from '@/lib/haptics';
 import { useGame } from '@/store/game';
 import { useSettings } from '@/store/settings';
-import { Button, Screen, Sheet, space, Text, useScreen } from '@/ui';
+import { Button, IconButton, Screen, Sheet, space, Text, useScreen } from '@/ui';
 
 /**
  * The game screen. It owns no rules and no physics — the board component runs
@@ -27,7 +27,7 @@ export default function GameScreen() {
   const newGame = useGame((s) => s.newGame);
   const resolveTurn = useGame((s) => s.resolveTurn);
 
-  const { content, width: screenWidth, height: screenHeight } = useScreen();
+  const { content, height: screenHeight } = useScreen();
   const [showOver, setShowOver] = useState(false);
   const [resolving, setResolving] = useState(false);
 
@@ -72,6 +72,12 @@ export default function GameScreen() {
             block={false}
             onPress={() => router.push('/kapsul')}
           />
+          <IconButton
+            accessibilityLabel={tr.settings.title}
+            tinted
+            onPress={() => router.push('/ayarlar')}>
+            <Text variant="heading">⚙</Text>
+          </IconButton>
         </View>
 
         {ready && game === null ? (
