@@ -2,7 +2,7 @@ import { useRouter } from 'expo-router';
 import { View } from 'react-native';
 
 import { tr } from '@/i18n/tr';
-import { Button, Card, Screen, space, Text } from '@/ui';
+import { Card, IconButton, Screen, space, Text } from '@/ui';
 
 /**
  * Play Store requires a privacy policy URL as well as this in-app copy. The
@@ -15,7 +15,12 @@ export default function PrivacyScreen() {
   return (
     <Screen scroll>
       <View style={{ gap: space.xl }}>
-        <Text variant="title">{tr.privacy.title}</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
+          <IconButton accessibilityLabel={tr.common.back} tinted onPress={() => router.back()}>
+            <Text variant="heading">‹</Text>
+          </IconButton>
+          <Text variant="title">{tr.privacy.title}</Text>
+        </View>
 
         <Card>
           <View style={{ gap: space.md }}>
@@ -46,8 +51,6 @@ export default function PrivacyScreen() {
             </Text>
           </View>
         </Card>
-
-        <Button label={tr.common.back} variant="secondary" onPress={() => router.back()} />
       </View>
     </Screen>
   );

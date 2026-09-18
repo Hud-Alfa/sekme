@@ -12,6 +12,7 @@ import {
   Button,
   Card,
   Confetti,
+  IconButton,
   radius,
   Screen,
   Sheet,
@@ -56,7 +57,12 @@ export default function CapsuleScreen() {
       }>
       <View style={{ gap: space.xl }}>
         <View style={{ gap: space.xs }}>
-          <Text variant="title">{tr.capsule.title}</Text>
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
+            <IconButton accessibilityLabel={tr.common.back} tinted onPress={() => router.back()}>
+              <Text variant="heading">‹</Text>
+            </IconButton>
+            <Text variant="title">{tr.capsule.title}</Text>
+          </View>
           <Text variant="body" color="textMuted">
             {tr.game.gold}: {formatNumber(progress.gold)}
           </Text>
@@ -139,8 +145,6 @@ export default function CapsuleScreen() {
             })}
           </View>
         </View>
-
-        <Button label={tr.common.back} variant="ghost" onPress={() => router.back()} />
       </View>
 
       <Sheet visible={lastPull !== null} onClose={clearPull} title={tr.capsule.title}>

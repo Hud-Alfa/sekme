@@ -7,15 +7,14 @@ export type ThemePreference = 'system' | 'light' | 'dark';
 type SettingsState = {
   theme: ThemePreference;
   hapticsEnabled: boolean;
-  notificationsEnabled: boolean;
-  /** Reminder time as minutes past midnight, local. */
-  reminderMinutes: number;
+  musicEnabled: boolean;
+  sfxEnabled: boolean;
   onboardingDone: boolean;
 
   setTheme: (theme: ThemePreference) => void;
   setHaptics: (enabled: boolean) => void;
-  setNotifications: (enabled: boolean) => void;
-  setReminderMinutes: (minutes: number) => void;
+  setMusic: (enabled: boolean) => void;
+  setSfx: (enabled: boolean) => void;
   completeOnboarding: () => void;
   resetAll: () => void;
 };
@@ -23,8 +22,10 @@ type SettingsState = {
 const defaults = {
   theme: 'system' as ThemePreference,
   hapticsEnabled: true,
-  notificationsEnabled: false,
-  reminderMinutes: 20 * 60,
+  // No audio engine wired up yet — these are the switches for when there
+  // is one, so the setting exists before the sound does rather than after.
+  musicEnabled: true,
+  sfxEnabled: true,
   onboardingDone: false,
 };
 
@@ -34,8 +35,8 @@ export const useSettings = create<SettingsState>()(
       ...defaults,
       setTheme: (theme) => set({ theme }),
       setHaptics: (hapticsEnabled) => set({ hapticsEnabled }),
-      setNotifications: (notificationsEnabled) => set({ notificationsEnabled }),
-      setReminderMinutes: (reminderMinutes) => set({ reminderMinutes }),
+      setMusic: (musicEnabled) => set({ musicEnabled }),
+      setSfx: (sfxEnabled) => set({ sfxEnabled }),
       completeOnboarding: () => set({ onboardingDone: true }),
       resetAll: () => set({ ...defaults }),
     }),

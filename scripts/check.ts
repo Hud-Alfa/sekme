@@ -265,7 +265,7 @@ console.log('\ncollecting');
   });
   eq('balls are added', state.balls, 4);
   eq('gold is added', state.gold, 2);
-  eq('the next shot starts where the first ball landed', state.launchX, 0.25);
+  eq('the next shot starts where the last ball landed', state.launchX, 0.25);
 }
 
 console.log('\nblock damage survives the turn, not just the frame it happened on');

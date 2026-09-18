@@ -68,6 +68,7 @@ function Navigation() {
         }}>
         <Stack.Screen name="index" />
         <Stack.Screen name="onboarding" options={{ animation: 'fade', gestureEnabled: false }} />
+        <Stack.Screen name="oyun" />
         <Stack.Screen name="ayarlar" />
         <Stack.Screen name="kapsul" />
         <Stack.Screen name="hakkinda" />

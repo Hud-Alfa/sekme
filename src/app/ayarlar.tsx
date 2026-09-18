@@ -1,15 +1,11 @@
 import Constants from 'expo-constants';
-import { File, Paths } from 'expo-file-system';
 import { useRouter } from 'expo-router';
-import * as Sharing from 'expo-sharing';
 import { useState } from 'react';
 import { Alert, Switch, View } from 'react-native';
 
-import { exportDatabase, wipeDatabase } from '@/db';
+import { wipeDatabase } from '@/db';
 import { tr } from '@/i18n/tr';
-import { formatTimeOfDay } from '@/lib/format';
 import { haptic } from '@/lib/haptics';
-import { cancelDailyReminder, scheduleDailyReminder } from '@/lib/notifications';
 import { useSettings, type ThemePreference } from '@/store/settings';
 import {
   Button,
@@ -38,55 +34,10 @@ export default function SettingsScreen() {
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [busy, setBusy] = useState(false);
 
-  async function toggleNotifications(next: boolean) {
-    if (!next) {
-      await cancelDailyReminder();
-      s.setNotifications(false);
-      return;
-    }
-
-    const ok = await scheduleDailyReminder(
-      s.reminderMinutes,
-      tr.app.name,
-      'Bugün nasıl gidiyor?',
-    );
-
-    // Keep the toggle honest: if permission was refused it stays off.
-    s.setNotifications(ok);
-    if (!ok) Alert.alert(tr.settings.notifications, tr.settings.notificationsDenied);
-  }
-
-  async function exportData() {
-    setBusy(true);
-    try {
-      const dump = await exportDatabase();
-      const payload = JSON.stringify(
-        { app: tr.app.name, exportedAt: new Date().toISOString(), data: dump },
-        null,
-        2,
-      );
-
-      const file = new File(Paths.cache, `${Constants.expoConfig?.slug ?? 'app'}-verilerim.json`);
-      file.create({ overwrite: true });
-      file.write(payload);
-
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(file.uri, { mimeType: 'application/json' });
-      } else {
-        Alert.alert(tr.settings.exportData, `Dosya kaydedildi:\n${file.uri}`);
-      }
-    } catch {
-      Alert.alert(tr.common.error, 'Verilerin dışa aktarılamadı.');
-    } finally {
-      setBusy(false);
-    }
-  }
-
   async function deleteEverything() {
     haptic.heavy();
     setBusy(true);
     try {
-      await cancelDailyReminder();
       await wipeDatabase();
       s.resetAll();
       setConfirmDelete(false);
@@ -122,6 +73,34 @@ export default function SettingsScreen() {
           </View>
         </Section>
 
+        <Section title={tr.settings.sound}>
+          <ListRow
+            title={tr.settings.music}
+            subtitle={tr.settings.musicHint}
+            accessory={
+              <Switch
+                value={s.musicEnabled}
+                onValueChange={s.setMusic}
+                trackColor={{ true: colors.accent, false: colors.border }}
+                accessibilityLabel={tr.settings.music}
+              />
+            }
+          />
+          <ListRow
+            title={tr.settings.sfx}
+            subtitle={tr.settings.sfxHint}
+            last
+            accessory={
+              <Switch
+                value={s.sfxEnabled}
+                onValueChange={s.setSfx}
+                trackColor={{ true: colors.accent, false: colors.border }}
+                accessibilityLabel={tr.settings.sfx}
+              />
+            }
+          />
+        </Section>
+
         <Section title={tr.settings.feedback}>
           <ListRow
             title={tr.settings.haptics}
@@ -138,32 +117,7 @@ export default function SettingsScreen() {
           />
         </Section>
 
-        <Section title={tr.settings.notifications}>
-          <ListRow
-            title={tr.settings.reminder}
-            subtitle={
-              s.notificationsEnabled
-                ? `Her gün ${formatTimeOfDay(s.reminderMinutes)}`
-                : 'Kapalı'
-            }
-            last
-            accessory={
-              <Switch
-                value={s.notificationsEnabled}
-                onValueChange={toggleNotifications}
-                trackColor={{ true: colors.accent, false: colors.border }}
-                accessibilityLabel={tr.settings.reminder}
-              />
-            }
-          />
-        </Section>
-
         <Section title={tr.settings.data}>
-          <ListRow
-            title={tr.settings.exportData}
-            subtitle={tr.settings.exportHint}
-            onPress={exportData}
-          />
           <ListRow
             title={tr.settings.deleteData}
             subtitle={tr.settings.deleteHint}

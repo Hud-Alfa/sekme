@@ -19,6 +19,7 @@ export const tr = {
     aimHint: 'Parmağını sürükle, bırak — toplar gitsin',
     resume: 'Devam et',
     newGame: 'Yeni oyun',
+    store: 'Mağaza',
     over: 'Oyun bitti',
     overBody: 'Bloklar en alta ulaştı.',
     newRecord: 'Yeni rekor!',
@@ -30,6 +31,11 @@ export const tr = {
     restartConfirmBody:
       'Bu turdaki tahta ve skor kaybolacak. Toplarının, altınının ve rekorunun hiçbiri etkilenmez.',
     restartConfirmAction: 'Evet, sıfırla',
+
+    newRunConfirmTitle: 'Yeni oyuna başlansın mı?',
+    newRunConfirmBody:
+      'Sürmekte olan oyunun tahtası ve skoru kaybolacak. Toplarının, altınının ve rekorunun hiçbiri etkilenmez.',
+    newRunConfirmAction: 'Evet, yeni oyun',
   },
 
   capsule: {
@@ -104,18 +110,17 @@ export const tr = {
     themeLight: 'Aydınlık',
     themeDark: 'Koyu',
 
+    sound: 'Ses',
+    music: 'Müzik',
+    musicHint: 'Arka plan müziği',
+    sfx: 'Ses efektleri',
+    sfxHint: 'Vuruş, kırılma ve kapsül sesleri',
+
     feedback: 'Geri bildirim',
     haptics: 'Titreşim',
     hapticsHint: 'Dokunma ve başarı anlarında hafif titreşim',
 
-    notifications: 'Bildirimler',
-    reminder: 'Günlük hatırlatma',
-    reminderTime: 'Hatırlatma saati',
-    notificationsDenied: 'Bildirim izni verilmedi. Telefon ayarlarından açabilirsin.',
-
     data: 'Verilerim',
-    exportData: 'Verimi dışa aktar',
-    exportHint: 'Tüm verini bir dosya olarak paylaş',
     deleteData: 'Tüm verimi sil',
     deleteHint: 'Bu işlem geri alınamaz',
     deleteConfirmTitle: 'Tüm verin silinsin mi?',

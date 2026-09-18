@@ -15,8 +15,14 @@ import { EMPTY, type Board, type Cell } from '@/game/board';
 import { COLUMNS, ROWS, SPEED_IN_CELLS, STUCK } from '@/game/curve';
 import type { TurnResult } from '@/game/engine';
 import { clampAim, hitAxis, rotate, stepWalls, subSteps } from '@/game/physics';
+import { formatNumber } from '@/lib/format';
 import { haptic } from '@/lib/haptics';
 import { duration, radius, settle, Text, timing, useColors } from '@/ui';
+
+/** Reserved strip below the play field for the launcher mark and the current
+ * ball count, so they never sit on top of a block even when the board is
+ * stacked all the way to the floor. */
+const LAUNCHER_STRIP = 40;
 
 /**
  * The playfield.
@@ -182,7 +188,9 @@ export function GameBoard({
   }
 
   const geometry = useSharedValue({ cell, width, height, ballRadius, speed });
-  geometry.value = { cell, width, height, ballRadius, speed };
+  useEffect(() => {
+    geometry.value = { cell, width, height, ballRadius, speed };
+  }, [cell, width, height, ballRadius, speed, geometry]);
 
   /* ---- crossing back to JS -------------------------------------------- */
 
@@ -493,9 +501,15 @@ export function GameBoard({
 
   const dots = useMemo(() => Array.from({ length: BALL_POOL }, (_, i) => i), []);
 
+  // Where the launcher mark and ball count sit, clamped so the group never
+  // spills past the board's own edges — a shot fired from the far left or
+  // right column used to push the label straight off-screen.
+  const markerWidth = 56;
+  const markerX = Math.min(Math.max(launchX * width - markerWidth / 2, 0), width - markerWidth);
+
   return (
     <GestureDetector gesture={gesture}>
-      <View style={{ width, height, alignSelf: 'center' }}>
+      <View style={{ width, height: height + LAUNCHER_STRIP, alignSelf: 'center' }}>
         {board.map((row, r) =>
           row.map((original, c) => {
             const index = r * COLUMNS + c;
@@ -553,23 +567,35 @@ export function GameBoard({
 
         {/* Always visible, not just while dragging: where the next shot
             starts from — which is also exactly where the last ball came
-            home, since a turn's end sets launchX to that spot. Without
-            this the launch point was invisible until a finger was already
-            down aiming. */}
+            home, since a turn's end sets launchX to that spot. Lives in the
+            reserved strip below the field, not on top of it, so it can
+            never land on a block even when the stack reaches the floor.
+            The ball count sits right above it — "how many, from where" is
+            one fact, so it reads as one instead of two disconnected labels. */}
         <View
           pointerEvents="none"
           style={{
             position: 'absolute',
-            bottom: -1,
-            left: launchX * width - 7,
-            width: 14,
-            height: 14,
-            borderRadius: radius.pill,
-            borderWidth: 2,
-            borderColor: colors.accent,
-            backgroundColor: colors.bg,
-          }}
-        />
+            top: height + 2,
+            left: markerX,
+            width: markerWidth,
+            alignItems: 'center',
+          }}>
+          <Text variant="label" color="accent" numeric numberOfLines={1}>
+            ×{formatNumber(ballCount)}
+          </Text>
+          <View
+            style={{
+              marginTop: 3,
+              width: 14,
+              height: 14,
+              borderRadius: radius.pill,
+              borderWidth: 2,
+              borderColor: colors.accent,
+              backgroundColor: colors.bg,
+            }}
+          />
+        </View>
 
         <Animated.View pointerEvents="none" style={[{ position: 'absolute' }, aimLine]}>
           {/* A plain bar only showed heading, not destination — the arrowhead

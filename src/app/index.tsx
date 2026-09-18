@@ -2,33 +2,18 @@ import { Redirect, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { View } from 'react-native';
 
-import { GameBoard } from '@/components/GameBoard';
 import { tr } from '@/i18n/tr';
-import { findBall } from '@/game/balls';
-import { COLUMNS, ROWS } from '@/game/curve';
 import { formatNumber } from '@/lib/format';
-import { haptic } from '@/lib/haptics';
 import { useGame } from '@/store/game';
 import { useSettings } from '@/store/settings';
-import {
-  Button,
-  Card,
-  IconButton,
-  NumberRoll,
-  radius,
-  Screen,
-  Sheet,
-  space,
-  Text,
-  useScreen,
-} from '@/ui';
+import { Button, IconButton, Screen, Sheet, space, Text, useScreen } from '@/ui';
 
 /**
- * The game screen. It owns no rules and no physics — the board component runs
- * the frame loop on the UI thread, the store owns persistence, and `src/game`
- * decides everything else.
+ * Home. The only screen that decides whether a run is starting fresh or
+ * picking up where it left off — everything past that lives in oyun.tsx,
+ * which never has to ask "is there already a game?" again.
  */
-export default function GameScreen() {
+export default function HomeScreen() {
   const router = useRouter();
   const onboardingDone = useSettings((s) => s.onboardingDone);
 
@@ -37,73 +22,26 @@ export default function GameScreen() {
   const game = useGame((s) => s.game);
   const progress = useGame((s) => s.progress);
   const newGame = useGame((s) => s.newGame);
-  const resolveTurn = useGame((s) => s.resolveTurn);
 
-  const { content, height: screenHeight } = useScreen();
-  const [showOver, setShowOver] = useState(false);
-  const [showRestart, setShowRestart] = useState(false);
-  const [resolving, setResolving] = useState(false);
-
-  // Balls/gold collected so far in the shot currently in flight. GameBoard
-  // reports a running total for the turn, not a delta, so this is simply set
-  // — and reset to zero the moment `game.balls` itself changes, which is the
-  // point the store has already folded that same total into the real count.
-  const [liveBonus, setLiveBonus] = useState({ balls: 0, gold: 0 });
-  const [syncedBalls, setSyncedBalls] = useState(game?.balls);
-  if (game?.balls !== syncedBalls) {
-    setSyncedBalls(game?.balls);
-    setLiveBonus({ balls: 0, gold: 0 });
-  }
+  const { height: screenHeight } = useScreen();
+  const [showNewRunConfirm, setShowNewRunConfirm] = useState(false);
 
   useEffect(() => {
     void load();
   }, [load]);
 
-  useEffect(() => {
-    if (game?.over) {
-      haptic.error();
-      setShowOver(true);
-    }
-  }, [game?.over]);
-
   if (!onboardingDone) return <Redirect href="/onboarding" />;
 
-  // The board has to fit whatever is left after the header and the launch
-  // strip, on the shortest phone as well as the tallest. Nothing here is a
-  // fixed number: the width is capped by the column and by the height budget.
-  const heightBudget = screenHeight * 0.62;
-  const boardWidth = Math.min(content, (heightBudget / ROWS) * COLUMNS);
+  const hasRun = game !== null;
 
   return (
     <Screen>
-      <View style={{ flex: 1, gap: space.lg }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.lg }}>
-          <View style={{ flex: 1 }}>
-            <Text variant="caption" color="textMuted">
-              {tr.game.score}
-            </Text>
-            <Text variant="title">{formatNumber(game?.turn ?? 0)}</Text>
+      <View style={{ flex: 1, gap: space.xl }}>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
+          <View style={{ flex: 1, flexDirection: 'row', gap: space.lg }}>
+            <Stat label={tr.game.best} value={formatNumber(progress.highScore)} />
+            <Stat label={tr.game.gold} value={formatNumber(progress.gold)} />
           </View>
-          <View>
-            <Text variant="caption" color="textMuted">
-              {tr.game.best}
-            </Text>
-            <Text variant="heading">{formatNumber(progress.highScore)}</Text>
-          </View>
-          <Button
-            label={`${tr.game.gold} ${formatNumber(progress.gold)}`}
-            variant="secondary"
-            block={false}
-            onPress={() => router.push('/kapsul')}
-          />
-          {game !== null && !game.over ? (
-            <IconButton
-              accessibilityLabel={tr.game.restart}
-              tinted
-              onPress={() => setShowRestart(true)}>
-              <Text variant="heading">↺</Text>
-            </IconButton>
-          ) : null}
           <IconButton
             accessibilityLabel={tr.settings.title}
             tinted
@@ -112,125 +50,80 @@ export default function GameScreen() {
           </IconButton>
         </View>
 
-        {ready && game === null ? (
-          <View style={{ flex: 1, justifyContent: 'center', gap: space.lg }}>
-            <Text variant="title">{tr.app.name}</Text>
+        <View style={{ flex: 1, justifyContent: 'center', gap: space.xxxl }}>
+          <View style={{ gap: space.xs, alignItems: 'center' }}>
+            <Text variant="display">{tr.app.name}</Text>
             <Text variant="body" color="textMuted">
-              {tr.game.aimHint}
+              {tr.app.tagline}
             </Text>
-            <Button label={tr.game.newGame} onPress={() => void newGame()} />
           </View>
-        ) : game === null ? null : (
-          <>
-            <GameBoard
-              board={game.board}
-              ballCount={game.balls}
-              launchX={game.launchX}
-              ballId={progress.selected}
-              width={boardWidth}
-              locked={resolving || game.over}
-              onProgress={(p) => setLiveBonus({ balls: p.ballsCollected, gold: p.goldCollected })}
-              onTurnComplete={async (result) => {
-                setResolving(true);
-                await resolveTurn(result);
-                setResolving(false);
-              }}
-            />
 
-            <Card>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
-                <View
-                  style={{
-                    width: 36,
-                    height: 36,
-                    borderRadius: radius.pill,
-                    backgroundColor: findBall(progress.selected).color,
-                    borderWidth: 2,
-                    borderColor: '#FFFFFFB3',
+          <View style={{ gap: space.md, minHeight: screenHeight * 0.22 }}>
+            {ready ? (
+              <>
+                {hasRun ? (
+                  <Button label={tr.game.resume} onPress={() => router.push('/oyun')} />
+                ) : null}
+                <Button
+                  label={tr.game.newGame}
+                  variant={hasRun ? 'secondary' : 'primary'}
+                  onPress={async () => {
+                    if (hasRun) {
+                      setShowNewRunConfirm(true);
+                      return;
+                    }
+                    await newGame();
+                    router.push('/oyun');
                   }}
                 />
-                <View style={{ flex: 1 }}>
-                  <NumberRoll
-                    value={game.balls + liveBonus.balls}
-                    variant="title"
-                    format={(n) => `×${formatNumber(n)}`}
-                  />
-                  <Text variant="caption" color="textMuted">
-                    {tr.game.balls}
-                  </Text>
-                </View>
-                <Text variant="caption" color="textMuted" style={{ flexShrink: 1 }}>
-                  {tr.game.aimHint}
-                </Text>
-              </View>
-            </Card>
-          </>
-        )}
+                <Button
+                  label={tr.game.store}
+                  variant="secondary"
+                  onPress={() => router.push('/kapsul')}
+                />
+              </>
+            ) : null}
+          </View>
+        </View>
       </View>
 
       <Sheet
-        visible={showOver}
-        onClose={() => setShowOver(false)}
-        title={tr.game.over}>
+        visible={showNewRunConfirm}
+        onClose={() => setShowNewRunConfirm(false)}
+        title={tr.game.newRunConfirmTitle}>
         <View style={{ gap: space.lg }}>
           <Text variant="body" color="textMuted">
-            {tr.game.overBody}
-          </Text>
-
-          {game !== null && game.turn >= progress.highScore ? (
-            <Text variant="heading" color="accent">
-              {tr.game.newRecord}
-            </Text>
-          ) : null}
-
-          <Text variant="title">
-            {tr.game.score}: {formatNumber(game?.turn ?? 0)}
-          </Text>
-          <Text variant="body" color="textMuted">
-            {tr.game.goldEarned}: {formatNumber(game?.gold ?? 0)}
-          </Text>
-
-          <Button
-            label={tr.game.again}
-            onPress={async () => {
-              setShowOver(false);
-              await newGame();
-            }}
-          />
-          <Button
-            label={tr.capsule.title}
-            variant="secondary"
-            onPress={() => {
-              setShowOver(false);
-              router.push('/kapsul');
-            }}
-          />
-        </View>
-      </Sheet>
-
-      <Sheet
-        visible={showRestart}
-        onClose={() => setShowRestart(false)}
-        title={tr.game.restartConfirmTitle}>
-        <View style={{ gap: space.lg }}>
-          <Text variant="body" color="textMuted">
-            {tr.game.restartConfirmBody}
+            {tr.game.newRunConfirmBody}
           </Text>
           <Button
-            label={tr.game.restartConfirmAction}
+            label={tr.game.newRunConfirmAction}
             variant="danger"
             onPress={async () => {
-              setShowRestart(false);
+              setShowNewRunConfirm(false);
               await newGame();
+              router.push('/oyun');
             }}
           />
           <Button
             label={tr.common.cancel}
             variant="ghost"
-            onPress={() => setShowRestart(false)}
+            onPress={() => setShowNewRunConfirm(false)}
           />
         </View>
       </Sheet>
     </Screen>
+  );
+}
+
+function Stat({ label, value }: { label: string; value: string }) {
+  return (
+    <View>
+      <Text variant="caption" color="textMuted">
+        {label}
+      </Text>
+      <Text variant="heading" numeric>
+        {value}
+      </Text>
+    </View>
   );
 }
