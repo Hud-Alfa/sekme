@@ -228,7 +228,7 @@ console.log('\na whole run, replayed from a seed');
     while (!state.over && turns < 500) {
       state = reduce(state, {
         type: 'resolve-turn',
-        result: { scored: 1, ballsCollected: 0, goldCollected: 0, launchX: 0.5 },
+        result: { scored: 1, ballsCollected: 0, goldCollected: 0, launchX: 0.5, board: state.board },
         random,
       });
       turns++;
@@ -260,12 +260,37 @@ console.log('\ncollecting');
   let state = initialState(random);
   state = reduce(state, {
     type: 'resolve-turn',
-    result: { scored: 0, ballsCollected: 3, goldCollected: 2, launchX: 0.25 },
+    result: { scored: 0, ballsCollected: 3, goldCollected: 2, launchX: 0.25, board: state.board },
     random,
   });
   eq('balls are added', state.balls, 4);
   eq('gold is added', state.gold, 2);
   eq('the next shot starts where the first ball landed', state.launchX, 0.25);
+}
+
+console.log('\nblock damage survives the turn, not just the frame it happened on');
+{
+  // Regression: resolve-turn used to descend state.board — the board BEFORE
+  // the shot — discarding every hit the turn just landed. It must descend
+  // action.result.board instead, which is what the UI thread hands back
+  // after the balls stop moving.
+  // A fresh row spawns at board[0] (index ROWS - 1 is the death line, at the
+  // bottom); descend() shifts row 0 to row 1 as it adds a new row on top.
+  const random = seededRandom(7);
+  const state = initialState(random);
+  const column = state.board[0]!.findIndex((c) => c.kind === 'block');
+  const cell = state.board[0]![column]!;
+  const hp = cell.kind === 'block' ? cell.hp : 0;
+
+  const damaged = damage(state.board, 0, column).board;
+  const next = reduce(state, {
+    type: 'resolve-turn',
+    result: { scored: 1, ballsCollected: 0, goldCollected: 0, launchX: 0.5, board: damaged },
+    random,
+  });
+
+  const landed = next.board[1]?.[column];
+  eq('the hit is still there next turn', landed?.kind === 'block' ? landed.hp : -1, hp - 1);
 }
 
 console.log('\na finished game ignores further turns');
@@ -274,7 +299,7 @@ console.log('\na finished game ignores further turns');
   const state = { ...initialState(random), over: true, turn: 40 };
   const after = reduce(state, {
     type: 'resolve-turn',
-    result: { scored: 10, ballsCollected: 5, goldCollected: 5, launchX: 0.5 },
+    result: { scored: 10, ballsCollected: 5, goldCollected: 5, launchX: 0.5, board: state.board },
     random,
   });
   eq('nothing moves', after.turn, 40);

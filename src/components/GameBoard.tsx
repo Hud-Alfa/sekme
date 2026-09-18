@@ -9,12 +9,12 @@ import Animated, {
 } from 'react-native-reanimated';
 
 import { findBall } from '@/game/balls';
-import type { Board } from '@/game/board';
-import { COLUMNS, ROWS, STUCK } from '@/game/curve';
+import { EMPTY, type Board, type Cell } from '@/game/board';
+import { COLUMNS, ROWS, SPEED_IN_CELLS, STUCK } from '@/game/curve';
 import type { TurnResult } from '@/game/engine';
 import { clampAim, hitAxis, rotate, stepWalls, subSteps } from '@/game/physics';
 import { haptic } from '@/lib/haptics';
-import { radius, Text, useColors } from '@/ui';
+import { duration, radius, Text, timing, useColors } from '@/ui';
 
 /**
  * The playfield.
@@ -37,8 +37,6 @@ import { radius, Text, useColors } from '@/ui';
 
 const BALL_POOL = 60;
 const BALL_RADIUS_RATIO = 0.1;
-/** Ball speed, in cells per second. */
-const SPEED_IN_CELLS = 2.6;
 /** Longest distance a ball may cover in one sub-step, as a share of a cell. */
 const MAX_STEP_RATIO = 0.35;
 /** Gap between balls as they leave the launcher. */
@@ -142,14 +140,40 @@ export function GameBoard({
 
   const finish = useCallback(
     (scored: number, balls: number, gold: number, landing: number) => {
+      // The frame loop tracks damage and pickups all turn in cells.value, but
+      // that lived only on the UI thread. Read it back one last time here and
+      // fold it into a real Board — otherwise every hit this turn is thrown
+      // away the moment the next row descends.
+      const { kinds, hp } = cells.value;
+      const finalBoard: Board = [];
+      for (let r = 0; r < ROWS; r++) {
+        const row: Cell[] = [];
+        for (let c = 0; c < COLUMNS; c++) {
+          const index = r * COLUMNS + c;
+          const kind = kinds[index] ?? 0;
+          const original = board[r]?.[c];
+          if (kind === 1) {
+            const maxHp = original?.kind === 'block' ? original.maxHp : (hp[index] ?? 1);
+            row.push({ kind: 'block', hp: hp[index] ?? 1, maxHp });
+          } else if (kind === 0) {
+            row.push(EMPTY);
+          } else {
+            // Untouched pickup: carry the original cell forward unchanged.
+            row.push(original ?? EMPTY);
+          }
+        }
+        finalBoard.push(row);
+      }
+
       onTurnComplete({
         scored,
         ballsCollected: balls,
         goldCollected: gold,
         launchX: landing < 0 ? launchX : landing,
+        board: finalBoard,
       });
     },
-    [onTurnComplete, launchX],
+    [onTurnComplete, launchX, board, cells],
   );
 
   // One haptic per broken block, never per bounce: forty balls rattling around
@@ -315,7 +339,7 @@ export function GameBoard({
     .onBegin((event) => {
       'worklet';
       if (flying.value === 1 || locked) return;
-      aiming.value = 1;
+      aiming.value = timing(1, duration.fast);
       aimAt(event.x, event.y);
     })
     .onUpdate((event) => {
@@ -326,7 +350,7 @@ export function GameBoard({
     .onEnd(() => {
       'worklet';
       if (flying.value === 1 || locked) return;
-      aiming.value = 0;
+      aiming.value = timing(0, duration.fast);
 
       flight.value = { ...emptyFlight(), queued: Math.min(ballCount, BALL_POOL) };
       tally.value = { scored: 0, balls: 0, gold: 0 };
@@ -408,19 +432,36 @@ export function GameBoard({
           }),
         )}
 
-        <Animated.View
-          pointerEvents="none"
-          style={[
-            {
+        <Animated.View pointerEvents="none" style={[{ position: 'absolute' }, aimLine]}>
+          {/* A plain bar only showed heading, not destination — the arrowhead
+              is what actually answers "where is this going". */}
+          <View
+            style={{
               position: 'absolute',
-              width: 2,
-              height: height * 0.35,
-              marginTop: -height * 0.35,
-              backgroundColor: colors.textMuted,
-            },
-            aimLine,
-          ]}
-        />
+              bottom: 0,
+              left: -1.5,
+              width: 3,
+              height: height * 0.32,
+              borderRadius: radius.pill,
+              backgroundColor: colors.text,
+            }}
+          />
+          <View
+            style={{
+              position: 'absolute',
+              bottom: height * 0.32 - 3,
+              left: -8,
+              width: 0,
+              height: 0,
+              borderLeftWidth: 8,
+              borderRightWidth: 8,
+              borderBottomWidth: 11,
+              borderLeftColor: 'transparent',
+              borderRightColor: 'transparent',
+              borderBottomColor: colors.text,
+            }}
+          />
+        </Animated.View>
 
         {dots.map((i) => (
           <Dot key={i} index={i} flight={flight} size={ballRadius * 2} color={ball.color} />

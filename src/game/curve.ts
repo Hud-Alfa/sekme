@@ -16,6 +16,9 @@ export const ROWS = 9;
 /** Balls the player starts with. */
 export const STARTING_BALLS = 1;
 
+/** Ball speed, in board cells per second. */
+export const SPEED_IN_CELLS = 3.8;
+
 /**
  * Base hit count for a block spawned on `turn`.
  *

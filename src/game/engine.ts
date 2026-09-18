@@ -29,6 +29,8 @@ export type TurnResult = {
   goldCollected: number;
   /** Where the first returning ball landed, 0..1. */
   launchX: number;
+  /** The board exactly as the turn left it — damage applied, pickups cleared. */
+  board: Board;
 };
 
 export type Action =
@@ -63,7 +65,10 @@ export function reduce(state: GameState, action: Action): GameState {
       const gold = state.gold + action.result.goldCollected;
       const turn = state.turn + 1;
 
-      const { board, overflow } = descend(state.board, turn, action.random);
+      // action.result.board is state.board with this turn's damage and
+      // pickups already applied — descending the stale state.board instead
+      // would silently discard every hit the turn just landed.
+      const { board, overflow } = descend(action.result.board, turn, action.random);
 
       return {
         board,
