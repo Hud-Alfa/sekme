@@ -1,20 +1,22 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
+  FadeOut,
   runOnJS,
   useAnimatedStyle,
   useFrameCallback,
   useSharedValue,
+  withSequence,
 } from 'react-native-reanimated';
 
-import { findBall } from '@/game/balls';
+import { findBall, type Ball } from '@/game/balls';
 import { EMPTY, type Board, type Cell } from '@/game/board';
 import { COLUMNS, ROWS, SPEED_IN_CELLS, STUCK } from '@/game/curve';
 import type { TurnResult } from '@/game/engine';
 import { clampAim, hitAxis, rotate, stepWalls, subSteps } from '@/game/physics';
 import { haptic } from '@/lib/haptics';
-import { duration, radius, Text, timing, useColors } from '@/ui';
+import { duration, radius, settle, Text, timing, useColors } from '@/ui';
 
 /**
  * The playfield.
@@ -31,8 +33,12 @@ import { duration, radius, Text, timing, useColors } from '@/ui';
  * and the arrays are what let the frame callback touch every ball without
  * crossing the bridge.
  *
- * Blocks are ordinary React views: they change once per turn, not once per
- * frame, so animating them here would buy nothing.
+ * Blocks ARE ordinary React views, and they only re-render on an actual hit —
+ * not once per frame — but they now DO re-render on a hit, not just once per
+ * turn: a block that visibly took no damage until the turn ended read as
+ * broken, not alive. The bridge back is a single `runOnJS` fired only on
+ * frames where something actually changed, same discipline as the haptic
+ * below it.
  */
 
 const BALL_POOL = 60;
@@ -67,6 +73,10 @@ function emptyFlight(): Flight {
   };
 }
 
+type CellsSnapshot = { kinds: number[]; hp: number[]; gold: number[] };
+
+export type TurnProgress = { ballsCollected: number; goldCollected: number };
+
 type GameBoardProps = {
   board: Board;
   ballCount: number;
@@ -74,6 +84,10 @@ type GameBoardProps = {
   ballId: string;
   width: number;
   onTurnComplete: (result: TurnResult) => void;
+  /** Fires on any frame that actually changed something — a hit or a pickup —
+      so the screen can show the running total climbing mid-turn instead of
+      jumping once at the end. */
+  onProgress?: (progress: TurnProgress) => void;
   locked: boolean;
 };
 
@@ -84,6 +98,7 @@ export function GameBoard({
   ballId,
   width,
   onTurnComplete,
+  onProgress,
   locked,
 }: GameBoardProps) {
   const colors = useColors();
@@ -128,6 +143,22 @@ export function GameBoard({
   const cells = useSharedValue(snapshot);
   cells.value = snapshot;
 
+  // A React-visible mirror of the same data, updated only on frames that
+  // actually changed a cell (see `reportProgress` below) — this is what the
+  // block views below render from, so a hit shows up as it happens instead
+  // of only once the whole turn resolves.
+  //
+  // Reset synchronously during render rather than in an effect: a new `board`
+  // prop means every index means something different (the row shift), so a
+  // one-render lag here would pair a stale liveCells index against a fresh
+  // board index and briefly show the wrong hp on the wrong cell.
+  const [renderedBoard, setRenderedBoard] = useState(board);
+  const [liveCells, setLiveCells] = useState<CellsSnapshot>(snapshot);
+  if (board !== renderedBoard) {
+    setRenderedBoard(board);
+    setLiveCells(snapshot);
+  }
+
   const geometry = useSharedValue({ cell, width, height, ballRadius, speed });
   geometry.value = { cell, width, height, ballRadius, speed };
 
@@ -137,6 +168,25 @@ export function GameBoard({
   // returns early still wakes the UI thread sixty times a second, and on a
   // phone that is battery and heat spent on deciding to do nothing.
   const [inFlight, setInFlight] = useState(false);
+
+  // Mid-turn hit/pickup reporting: fired only on frames where a ball actually
+  // touched something, never on every frame — the block views need to be
+  // told a hit happened, but the JS thread does not need 60 messages a second
+  // to tell them.
+  // Per-cell gold amounts are fixed at spawn and never change mid-turn, so
+  // they are read from a ref rather than closed over directly — a plain
+  // closure here would freeze on whatever `snapshot` was current the one
+  // time this callback was created.
+  const goldRef = useRef(snapshot.gold);
+  goldRef.current = snapshot.gold;
+
+  const reportProgress = useCallback(
+    (kinds: number[], hp: number[], ballsGot: number, goldGot: number) => {
+      setLiveCells({ kinds, hp, gold: goldRef.current });
+      onProgress?.({ ballsCollected: ballsGot, goldCollected: goldGot });
+    },
+    [onProgress],
+  );
 
   const finish = useCallback(
     (scored: number, balls: number, gold: number, landing: number) => {
@@ -230,6 +280,7 @@ export function GameBoard({
     let ballsGot = tally.value.balls;
     let goldGot = tally.value.gold;
     let broke = false;
+    let changed = false;
     let moving = 0;
 
     for (let i = 0; i < BALL_POOL; i++) {
@@ -262,6 +313,8 @@ export function GameBoard({
             const box = { x: c * g.cell, y: r * g.cell, width: g.cell, height: g.cell };
             const axis = hitAxis(position, g.ballRadius, box);
             if (axis === null) continue;
+
+            changed = true;
 
             if (kind === 1) {
               hp[index] = (hp[index] ?? 1) - 1;
@@ -304,6 +357,7 @@ export function GameBoard({
     tally.value = { scored, balls: ballsGot, gold: goldGot };
 
     if (broke) runOnJS(onBreak)();
+    if (changed) runOnJS(reportProgress)(kinds, hp, ballsGot, goldGot);
 
     if (moving === 0 && queued === 0) {
       flying.value = 0;
@@ -378,44 +432,41 @@ export function GameBoard({
     <GestureDetector gesture={gesture}>
       <View style={{ width, height, alignSelf: 'center' }}>
         {board.map((row, r) =>
-          row.map((item, c) => {
-            if (item.kind === 'empty') return null;
-            const key = `${r}-${c}`;
+          row.map((original, c) => {
+            const index = r * COLUMNS + c;
+            const liveKind = liveCells.kinds[index] ?? 0;
+            if (liveKind === 0) return null;
 
-            if (item.kind === 'block') {
-              // Colour tracks toughness, but the number is always printed: the
-              // shade is a hint, the digit is the fact.
-              const intensity = Math.min(1, item.hp / 60);
+            const key = `${r}-${c}`;
+            const left = c * cell;
+            const top = r * cell;
+
+            if (liveKind === 1) {
+              const maxHp = original.kind === 'block' ? original.maxHp : 1;
               return (
-                <View
+                <BlockCell
                   key={key}
-                  style={{
-                    position: 'absolute',
-                    left: c * cell + 2,
-                    top: r * cell + 2,
-                    width: cell - 4,
-                    height: cell - 4,
-                    borderRadius: radius.sm,
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    backgroundColor: colors.accent,
-                    opacity: 0.35 + intensity * 0.65,
-                  }}>
-                  <Text variant="label" style={{ color: colors.onAccent }}>
-                    {item.hp}
-                  </Text>
-                </View>
+                  hp={liveCells.hp[index] ?? 1}
+                  maxHp={maxHp}
+                  left={left}
+                  top={top}
+                  size={cell}
+                  accent={colors.accent}
+                  onAccent={colors.onAccent}
+                />
               );
             }
 
-            const isBall = item.kind === 'ball';
+            // An untouched pickup — original still describes it exactly.
+            if (original.kind !== 'ball' && original.kind !== 'gold') return null;
+            const isBall = original.kind === 'ball';
             return (
               <View
                 key={key}
                 style={{
                   position: 'absolute',
-                  left: c * cell + cell / 2 - ballRadius * 1.5,
-                  top: r * cell + cell / 2 - ballRadius * 1.5,
+                  left: left + cell / 2 - ballRadius * 1.5,
+                  top: top + cell / 2 - ballRadius * 1.5,
                   width: ballRadius * 3,
                   height: ballRadius * 3,
                   borderRadius: radius.pill,
@@ -439,35 +490,117 @@ export function GameBoard({
             style={{
               position: 'absolute',
               bottom: 0,
-              left: -1.5,
-              width: 3,
-              height: height * 0.32,
+              left: -9,
+              width: 18,
+              height: 18,
               borderRadius: radius.pill,
-              backgroundColor: colors.text,
+              borderWidth: 2,
+              borderColor: colors.accent,
+              opacity: 0.5,
             }}
           />
           <View
             style={{
               position: 'absolute',
-              bottom: height * 0.32 - 3,
-              left: -8,
+              bottom: 0,
+              left: -2,
+              width: 4,
+              height: height * 0.32,
+              borderRadius: radius.pill,
+              backgroundColor: colors.accent,
+            }}
+          />
+          <View
+            style={{
+              position: 'absolute',
+              bottom: height * 0.32 - 4,
+              left: -9,
               width: 0,
               height: 0,
-              borderLeftWidth: 8,
-              borderRightWidth: 8,
-              borderBottomWidth: 11,
+              borderLeftWidth: 9,
+              borderRightWidth: 9,
+              borderBottomWidth: 13,
               borderLeftColor: 'transparent',
               borderRightColor: 'transparent',
-              borderBottomColor: colors.text,
+              borderBottomColor: colors.accent,
             }}
           />
         </Animated.View>
 
         {dots.map((i) => (
-          <Dot key={i} index={i} flight={flight} size={ballRadius * 2} color={ball.color} />
+          <Dot key={i} index={i} flight={flight} size={ballRadius * 2} ball={ball} />
         ))}
       </View>
     </GestureDetector>
+  );
+}
+
+/**
+ * A block. Hit feedback (a quick punch) and break feedback (fade and shrink
+ * away) both live here now instead of only showing up once a turn away —
+ * `exiting` fires the moment React stops rendering this cell, which is
+ * exactly the frame `liveCells` reports it broken.
+ */
+function BlockCell({
+  hp,
+  maxHp,
+  left,
+  top,
+  size,
+  accent,
+  onAccent,
+}: {
+  hp: number;
+  maxHp: number;
+  left: number;
+  top: number;
+  size: number;
+  accent: string;
+  onAccent: string;
+}) {
+  const punch = useSharedValue(1);
+  const previousHp = useRef(hp);
+
+  useEffect(() => {
+    if (hp < previousHp.current) {
+      // A quick punch out and a spring back in — a hit should feel like an
+      // impact, not a fade.
+      punch.value = withSequence(timing(1.14, duration.fast / 2), settle(1));
+    }
+    previousHp.current = hp;
+  }, [hp, punch]);
+
+  const style = useAnimatedStyle(() => ({ transform: [{ scale: punch.value }] }));
+
+  // Colour tracks toughness, but the number is always printed: the shade is
+  // a hint, the digit is the fact.
+  const intensity = Math.min(1, hp / Math.max(1, maxHp));
+
+  // Split in two: the outer view owns `exiting` and nothing else, the inner
+  // one owns the punch scale and the intensity opacity — Reanimated warns
+  // (correctly) that a layout animation and a custom opacity fight over the
+  // same view otherwise.
+  return (
+    <Animated.View
+      exiting={FadeOut.duration(duration.fast)}
+      style={{ position: 'absolute', left, top, width: size, height: size }}>
+      <Animated.View
+        style={[
+          {
+            flex: 1,
+            borderRadius: radius.sm,
+            alignItems: 'center',
+            justifyContent: 'center',
+            backgroundColor: accent,
+            opacity: 0.4 + intensity * 0.6,
+          },
+          style,
+        ]}>
+        <Text variant="label" style={{ color: onAccent }}>
+          {hp}
+        </Text>
+      </Animated.View>
+    </Animated.View>
   );
 }
 
@@ -475,12 +608,12 @@ function Dot({
   index,
   flight,
   size,
-  color,
+  ball,
 }: {
   index: number;
   flight: { value: Flight };
   size: number;
-  color: string;
+  ball: Ball;
 }) {
   const style = useAnimatedStyle(() => {
     const live = flight.value.live[index] ?? 0;
@@ -493,19 +626,48 @@ function Dot({
     };
   });
 
+  // Higher rarity, more glow — the trail field was always in the catalogue,
+  // it just never reached a view. A plain filled circle read the same for
+  // every ball regardless of what a capsule actually paid for.
+  const glowSize = size * (1.6 + Math.min(ball.trail, 12) / 10);
+
   return (
-    <Animated.View
-      pointerEvents="none"
-      style={[
-        {
-          position: 'absolute',
+    <Animated.View pointerEvents="none" style={[{ position: 'absolute' }, style]}>
+      {ball.trail > 0 ? (
+        <View
+          style={{
+            position: 'absolute',
+            left: size / 2 - glowSize / 2,
+            top: size / 2 - glowSize / 2,
+            width: glowSize,
+            height: glowSize,
+            borderRadius: glowSize / 2,
+            backgroundColor: ball.color,
+            opacity: 0.22,
+          }}
+        />
+      ) : null}
+      <View
+        style={{
           width: size,
           height: size,
           borderRadius: size / 2,
-          backgroundColor: color,
-        },
-        style,
-      ]}
-    />
+          backgroundColor: ball.color,
+          borderWidth: Math.max(1, size * 0.12),
+          borderColor: '#FFFFFF66',
+        }}
+      />
+      <View
+        style={{
+          position: 'absolute',
+          left: size * 0.22,
+          top: size * 0.18,
+          width: size * 0.32,
+          height: size * 0.32,
+          borderRadius: size * 0.16,
+          backgroundColor: '#FFFFFF80',
+        }}
+      />
+    </Animated.View>
   );
 }

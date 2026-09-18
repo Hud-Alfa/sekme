@@ -31,6 +31,17 @@ export default function GameScreen() {
   const [showOver, setShowOver] = useState(false);
   const [resolving, setResolving] = useState(false);
 
+  // Balls/gold collected so far in the shot currently in flight. GameBoard
+  // reports a running total for the turn, not a delta, so this is simply set
+  // — and reset to zero the moment `game.balls` itself changes, which is the
+  // point the store has already folded that same total into the real count.
+  const [liveBonus, setLiveBonus] = useState({ balls: 0, gold: 0 });
+  const [syncedBalls, setSyncedBalls] = useState(game?.balls);
+  if (game?.balls !== syncedBalls) {
+    setSyncedBalls(game?.balls);
+    setLiveBonus({ balls: 0, gold: 0 });
+  }
+
   useEffect(() => {
     void load();
   }, [load]);
@@ -97,6 +108,7 @@ export default function GameScreen() {
               ballId={progress.selected}
               width={boardWidth}
               locked={resolving || game.over}
+              onProgress={(p) => setLiveBonus({ balls: p.ballsCollected, gold: p.goldCollected })}
               onTurnComplete={async (result) => {
                 setResolving(true);
                 await resolveTurn(result);
@@ -106,7 +118,7 @@ export default function GameScreen() {
 
             <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
               <Text variant="heading" style={{ flex: 1 }}>
-                ×{formatNumber(game.balls)} {tr.game.balls}
+                ×{formatNumber(game.balls + liveBonus.balls)} {tr.game.balls}
               </Text>
               <Text variant="caption" color="textMuted">
                 {tr.game.aimHint}
