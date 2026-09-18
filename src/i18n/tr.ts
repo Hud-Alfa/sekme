@@ -24,6 +24,12 @@ export const tr = {
     newRecord: 'Yeni rekor!',
     goldEarned: 'Bu turda kazandığın altın',
     again: 'Tekrar oyna',
+
+    restart: 'Oyunu sıfırla',
+    restartConfirmTitle: 'Bu oyun sıfırlansın mı?',
+    restartConfirmBody:
+      'Bu turdaki tahta ve skor kaybolacak. Toplarının, altınının ve rekorunun hiçbiri etkilenmez.',
+    restartConfirmAction: 'Evet, sıfırla',
   },
 
   capsule: {

@@ -29,6 +29,7 @@ export default function GameScreen() {
 
   const { content, height: screenHeight } = useScreen();
   const [showOver, setShowOver] = useState(false);
+  const [showRestart, setShowRestart] = useState(false);
   const [resolving, setResolving] = useState(false);
 
   // Balls/gold collected so far in the shot currently in flight. GameBoard
@@ -83,6 +84,14 @@ export default function GameScreen() {
             block={false}
             onPress={() => router.push('/kapsul')}
           />
+          {game !== null && !game.over ? (
+            <IconButton
+              accessibilityLabel={tr.game.restart}
+              tinted
+              onPress={() => setShowRestart(true)}>
+              <Text variant="heading">↺</Text>
+            </IconButton>
+          ) : null}
           <IconButton
             accessibilityLabel={tr.settings.title}
             tinted
@@ -164,6 +173,30 @@ export default function GameScreen() {
               setShowOver(false);
               router.push('/kapsul');
             }}
+          />
+        </View>
+      </Sheet>
+
+      <Sheet
+        visible={showRestart}
+        onClose={() => setShowRestart(false)}
+        title={tr.game.restartConfirmTitle}>
+        <View style={{ gap: space.lg }}>
+          <Text variant="body" color="textMuted">
+            {tr.game.restartConfirmBody}
+          </Text>
+          <Button
+            label={tr.game.restartConfirmAction}
+            variant="danger"
+            onPress={async () => {
+              setShowRestart(false);
+              await newGame();
+            }}
+          />
+          <Button
+            label={tr.common.cancel}
+            variant="ghost"
+            onPress={() => setShowRestart(false)}
           />
         </View>
       </Sheet>

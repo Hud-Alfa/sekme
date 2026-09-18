@@ -27,7 +27,7 @@ export type TurnResult = {
   scored: number;
   ballsCollected: number;
   goldCollected: number;
-  /** Where the first returning ball landed, 0..1. */
+  /** Where the last ball to return landed, 0..1 — the next shot starts here. */
   launchX: number;
   /** The board exactly as the turn left it — damage applied, pickups cleared. */
   board: Board;

@@ -124,7 +124,7 @@ export function GameBoard({
   const turnLocked = useSharedValue(0);
   const elapsed = useSharedValue(0);
   const speedScale = useSharedValue(1);
-  const firstLanding = useSharedValue(-1);
+  const lastLanding = useSharedValue(-1);
   const aim = useSharedValue({ x: 0, y: -1 });
   const aiming = useSharedValue(0);
   const tally = useSharedValue({ scored: 0, balls: 0, gold: 0 });
@@ -150,7 +150,6 @@ export function GameBoard({
   }, [board]);
 
   const cells = useSharedValue(snapshot);
-  cells.value = snapshot;
 
   // A React-visible mirror of the same data, updated only on frames that
   // actually changed a cell (see `reportProgress` below) — this is what the
@@ -161,11 +160,22 @@ export function GameBoard({
   // prop means every index means something different (the row shift), so a
   // one-render lag here would pair a stale liveCells index against a fresh
   // board index and briefly show the wrong hp on the wrong cell.
+  //
+  // CRITICAL: `cells.value` is reset here too, and ONLY here — guarded on the
+  // board actually changing. It used to be assigned unconditionally on every
+  // render, which looked harmless (`snapshot` is referentially stable within
+  // a turn) but was not: `reportProgress` below triggers a React re-render on
+  // every hit, and every one of those re-renders was overwriting cells.value
+  // back to this turn's STARTING snapshot, erasing whatever the frame loop
+  // had just mutated it to. That is why a destroyed block or a collected
+  // pickup could come back mid-turn — the damage was real for one frame, then
+  // silently undone by the very next render.
   const [renderedBoard, setRenderedBoard] = useState(board);
   const [liveCells, setLiveCells] = useState<CellsSnapshot>(snapshot);
   if (board !== renderedBoard) {
     setRenderedBoard(board);
     setLiveCells(snapshot);
+    cells.value = snapshot;
     // The board actually caught up — safe to accept a new shot again.
     turnLocked.value = 0;
   }
@@ -315,6 +325,14 @@ export function GameBoard({
         const minCol = Math.max(0, Math.floor((position.x - g.ballRadius) / g.cell));
         const maxCol = Math.min(COLUMNS - 1, Math.floor((position.x + g.ballRadius) / g.cell));
 
+        // A ball can overlap several blocks at once at a corner, now that
+        // blocks tile edge-to-edge with no gap between them. Reflecting once
+        // per overlapping block in the same sub-step let opposite reflections
+        // cancel out — net near-zero velocity, ball stuck oscillating in the
+        // seam. Only the first block found gets to redirect the ball; every
+        // block touched this sub-step still takes damage.
+        let blockHit = false;
+
         for (let r = minRow; r <= maxRow; r++) {
           for (let c = minCol; c <= maxCol; c++) {
             const index = r * COLUMNS + c;
@@ -334,11 +352,38 @@ export function GameBoard({
                 kinds[index] = 0;
                 broke = true;
               }
-              velocity = {
-                x: axis === 'x' ? -velocity.x : velocity.x,
-                y: axis === 'y' ? -velocity.y : velocity.y,
-              };
-              if (jitter) velocity = rotate(velocity, STUCK.jitterRadians);
+              if (!blockHit) {
+                blockHit = true;
+                velocity = {
+                  x: axis === 'x' ? -velocity.x : velocity.x,
+                  y: axis === 'y' ? -velocity.y : velocity.y,
+                };
+                if (jitter) velocity = rotate(velocity, STUCK.jitterRadians);
+
+                // Reflecting velocity alone does not move the ball — with
+                // blocks now touching edge-to-edge, a ball that penetrated
+                // past a boundary in one sub-step would stay embedded and
+                // keep re-triggering the same collision next sub-step,
+                // reflecting back and forth in place instead of leaving.
+                // Push it back to just outside the box it hit.
+                if (axis === 'x') {
+                  position = {
+                    x:
+                      position.x < box.x + box.width / 2
+                        ? box.x - g.ballRadius
+                        : box.x + box.width + g.ballRadius,
+                    y: position.y,
+                  };
+                } else {
+                  position = {
+                    x: position.x,
+                    y:
+                      position.y < box.y + box.height / 2
+                        ? box.y - g.ballRadius
+                        : box.y + box.height + g.ballRadius,
+                  };
+                }
+              }
             } else {
               // Pickups do not deflect: a ball that bounced off a "+1" would
               // punish the player for collecting it.
@@ -351,7 +396,13 @@ export function GameBoard({
 
         if (position.y + g.ballRadius >= g.height) {
           live[i] = 2;
-          if (firstLanding.value < 0) firstLanding.value = position.x / g.width;
+          // Unconditional, not "only if unset": the next shot should start
+          // from wherever the LAST ball came home, not the first — the ball
+          // loop runs in index order each frame, not landing order, so
+          // whichever one lands last (this frame or a later one) simply
+          // overwrites it, and whatever value is left when the turn ends is
+          // correct by construction.
+          lastLanding.value = position.x / g.width;
           break;
         }
       }
@@ -374,7 +425,7 @@ export function GameBoard({
       flying.value = 0;
       turnLocked.value = 1;
       runOnJS(setInFlight)(false);
-      runOnJS(finish)(scored, ballsGot, goldGot, firstLanding.value);
+      runOnJS(finish)(scored, ballsGot, goldGot, lastLanding.value);
     }
   }, false);
 
@@ -422,7 +473,7 @@ export function GameBoard({
       tally.value = { scored: 0, balls: 0, gold: 0 };
       elapsed.value = 0;
       speedScale.value = 1;
-      firstLanding.value = -1;
+      lastLanding.value = -1;
       flying.value = 1;
       runOnJS(setInFlight)(true);
     });
