@@ -57,6 +57,7 @@ type Flight = {
 };
 
 function emptyFlight(): Flight {
+  'worklet';
   return {
     px: new Array<number>(BALL_POOL).fill(0),
     py: new Array<number>(BALL_POOL).fill(0),
