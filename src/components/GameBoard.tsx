@@ -2,12 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AppState, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
-  FadeOut,
   runOnJS,
   useAnimatedStyle,
   useFrameCallback,
   useSharedValue,
   withSequence,
+  ZoomOut,
 } from 'react-native-reanimated';
 
 import { findBall, type Ball } from '@/game/balls';
@@ -42,7 +42,7 @@ import { duration, radius, settle, Text, timing, useColors } from '@/ui';
  */
 
 const BALL_POOL = 60;
-const BALL_RADIUS_RATIO = 0.1;
+const BALL_RADIUS_RATIO = 0.14;
 /** Longest distance a ball may cover in one sub-step, as a share of a cell. */
 const MAX_STEP_RATIO = 0.35;
 /** Gap between balls as they leave the launcher. */
@@ -113,6 +113,15 @@ export function GameBoard({
 
   const flight = useSharedValue<Flight>(emptyFlight());
   const flying = useSharedValue(0);
+  // `locked` (the JS prop) lags a turn's true end by at least one React
+  // render — it only becomes true once `onTurnComplete` → `setResolving`
+  // → re-render has happened, and the gesture's closure only sees that on
+  // its NEXT recreation. A shot fired into that gap fires for real, against
+  // a board that has not caught up yet, and can double-collect whatever it
+  // touches. This is set the instant a turn ends (same frame as
+  // `flying.value = 0`, no JS round trip) and only cleared once this
+  // component has actually re-rendered with the resolved board.
+  const turnLocked = useSharedValue(0);
   const elapsed = useSharedValue(0);
   const speedScale = useSharedValue(1);
   const firstLanding = useSharedValue(-1);
@@ -157,6 +166,8 @@ export function GameBoard({
   if (board !== renderedBoard) {
     setRenderedBoard(board);
     setLiveCells(snapshot);
+    // The board actually caught up — safe to accept a new shot again.
+    turnLocked.value = 0;
   }
 
   const geometry = useSharedValue({ cell, width, height, ballRadius, speed });
@@ -361,6 +372,7 @@ export function GameBoard({
 
     if (moving === 0 && queued === 0) {
       flying.value = 0;
+      turnLocked.value = 1;
       runOnJS(setInFlight)(false);
       runOnJS(finish)(scored, ballsGot, goldGot, firstLanding.value);
     }
@@ -392,18 +404,18 @@ export function GameBoard({
   const gesture = Gesture.Pan()
     .onBegin((event) => {
       'worklet';
-      if (flying.value === 1 || locked) return;
+      if (flying.value === 1 || turnLocked.value === 1 || locked) return;
       aiming.value = timing(1, duration.fast);
       aimAt(event.x, event.y);
     })
     .onUpdate((event) => {
       'worklet';
-      if (flying.value === 1 || locked) return;
+      if (flying.value === 1 || turnLocked.value === 1 || locked) return;
       aimAt(event.x, event.y);
     })
     .onEnd(() => {
       'worklet';
-      if (flying.value === 1 || locked) return;
+      if (flying.value === 1 || turnLocked.value === 1 || locked) return;
       aiming.value = timing(0, duration.fast);
 
       flight.value = { ...emptyFlight(), queued: Math.min(ballCount, BALL_POOL) };
@@ -579,10 +591,11 @@ function BlockCell({
   // Split in two: the outer view owns `exiting` and nothing else, the inner
   // one owns the punch scale and the intensity opacity — Reanimated warns
   // (correctly) that a layout animation and a custom opacity fight over the
-  // same view otherwise.
+  // same view otherwise. ZoomOut rather than a plain fade — a block reaching
+  // zero should visibly collapse, not just fade out in place.
   return (
     <Animated.View
-      exiting={FadeOut.duration(duration.fast)}
+      exiting={ZoomOut.duration(duration.base)}
       style={{ position: 'absolute', left, top, width: size, height: size }}>
       <Animated.View
         style={[
@@ -629,43 +642,58 @@ function Dot({
   // Higher rarity, more glow — the trail field was always in the catalogue,
   // it just never reached a view. A plain filled circle read the same for
   // every ball regardless of what a capsule actually paid for.
-  const glowSize = size * (1.6 + Math.min(ball.trail, 12) / 10);
+  const glowSize = size * (1.7 + Math.min(ball.trail, 12) / 8);
 
   return (
     <Animated.View pointerEvents="none" style={[{ position: 'absolute' }, style]}>
-      {ball.trail > 0 ? (
-        <View
-          style={{
-            position: 'absolute',
-            left: size / 2 - glowSize / 2,
-            top: size / 2 - glowSize / 2,
-            width: glowSize,
-            height: glowSize,
-            borderRadius: glowSize / 2,
-            backgroundColor: ball.color,
-            opacity: 0.22,
-          }}
-        />
-      ) : null}
+      {/* Every ball gets a soft glow, not only the ones with a trail — a
+          flat-colored dot the size of a fingertip disappears against a
+          board full of similarly-toned blocks without one. Rarity just
+          makes it bigger. */}
+      <View
+        style={{
+          position: 'absolute',
+          left: size / 2 - glowSize / 2,
+          top: size / 2 - glowSize / 2,
+          width: glowSize,
+          height: glowSize,
+          borderRadius: glowSize / 2,
+          backgroundColor: ball.color,
+          opacity: ball.trail > 0 ? 0.28 : 0.16,
+        }}
+      />
+      {/* A dark ring first, so the ball reads against light blocks and a
+          light background alike, then the fill, then a bright rim on top —
+          three tones instead of one flat circle. */}
       <View
         style={{
           width: size,
           height: size,
           borderRadius: size / 2,
-          backgroundColor: ball.color,
-          borderWidth: Math.max(1, size * 0.12),
-          borderColor: '#FFFFFF66',
-        }}
-      />
+          backgroundColor: '#00000040',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}>
+        <View
+          style={{
+            width: size * 0.86,
+            height: size * 0.86,
+            borderRadius: (size * 0.86) / 2,
+            backgroundColor: ball.color,
+            borderWidth: Math.max(1.5, size * 0.12),
+            borderColor: '#FFFFFFD9',
+          }}
+        />
+      </View>
       <View
         style={{
           position: 'absolute',
-          left: size * 0.22,
-          top: size * 0.18,
-          width: size * 0.32,
-          height: size * 0.32,
-          borderRadius: size * 0.16,
-          backgroundColor: '#FFFFFF80',
+          left: size * 0.24,
+          top: size * 0.2,
+          width: size * 0.3,
+          height: size * 0.3,
+          borderRadius: size * 0.15,
+          backgroundColor: '#FFFFFFB3',
         }}
       />
     </Animated.View>
