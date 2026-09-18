@@ -4,12 +4,24 @@ import { View } from 'react-native';
 
 import { GameBoard } from '@/components/GameBoard';
 import { tr } from '@/i18n/tr';
+import { findBall } from '@/game/balls';
 import { COLUMNS, ROWS } from '@/game/curve';
 import { formatNumber } from '@/lib/format';
 import { haptic } from '@/lib/haptics';
 import { useGame } from '@/store/game';
 import { useSettings } from '@/store/settings';
-import { Button, IconButton, Screen, Sheet, space, Text, useScreen } from '@/ui';
+import {
+  Button,
+  Card,
+  IconButton,
+  NumberRoll,
+  radius,
+  Screen,
+  Sheet,
+  space,
+  Text,
+  useScreen,
+} from '@/ui';
 
 /**
  * The game screen. It owns no rules and no physics — the board component runs
@@ -125,14 +137,33 @@ export default function GameScreen() {
               }}
             />
 
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
-              <Text variant="heading" style={{ flex: 1 }}>
-                ×{formatNumber(game.balls + liveBonus.balls)} {tr.game.balls}
-              </Text>
-              <Text variant="caption" color="textMuted">
-                {tr.game.aimHint}
-              </Text>
-            </View>
+            <Card>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.md }}>
+                <View
+                  style={{
+                    width: 36,
+                    height: 36,
+                    borderRadius: radius.pill,
+                    backgroundColor: findBall(progress.selected).color,
+                    borderWidth: 2,
+                    borderColor: '#FFFFFFB3',
+                  }}
+                />
+                <View style={{ flex: 1 }}>
+                  <NumberRoll
+                    value={game.balls + liveBonus.balls}
+                    variant="title"
+                    format={(n) => `×${formatNumber(n)}`}
+                  />
+                  <Text variant="caption" color="textMuted">
+                    {tr.game.balls}
+                  </Text>
+                </View>
+                <Text variant="caption" color="textMuted" style={{ flexShrink: 1 }}>
+                  {tr.game.aimHint}
+                </Text>
+              </View>
+            </Card>
           </>
         )}
       </View>

@@ -3,6 +3,7 @@ import {
   COLUMNS,
   HP_SPREAD,
   ROWS,
+  ballAmount,
   baseHp,
   cellsPerRow,
   goldAmount,
@@ -19,7 +20,7 @@ import {
 export type Cell =
   | { kind: 'empty' }
   | { kind: 'block'; hp: number; maxHp: number }
-  | { kind: 'ball' }
+  | { kind: 'ball'; amount: number }
   | { kind: 'gold'; amount: number };
 
 export type Board = Cell[][];
@@ -65,7 +66,7 @@ export function spawnRow(turn: number, random: Random): Cell[] {
   // balls the run stalls; with too many it plays itself.
   const free = columns.slice(count);
   if (free.length > 0 && random() < BALL_PICKUP_CHANCE) {
-    row[free[0]!] = { kind: 'ball' };
+    row[free[0]!] = { kind: 'ball', amount: ballAmount(turn) };
   }
 
   if (free.length > 1 && random() < goldChance(turn)) {

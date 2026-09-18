@@ -41,8 +41,23 @@ export function cellsPerRow(turn: number): { min: number; max: number } {
   return { min: 4, max: 6 };
 }
 
-/** Chance a spawned cell is a "+1 ball" pickup rather than a block. */
+/** Chance a spawned cell is a ball pickup rather than a block. */
 export const BALL_PICKUP_CHANCE = 0.55;
+
+/**
+ * How many balls a pickup is actually worth, as turn grows.
+ *
+ * This used to be a flat +1 forever, which fell further behind every turn:
+ * `baseHp` grows superlinearly and `cellsPerRow` fills more of the board, but
+ * a single extra ball at turn 150 clears exactly as little as it did at
+ * turn 15. Scaling it is what makes the pickup stay worth aiming for instead
+ * of becoming a rounding error.
+ */
+export function ballAmount(turn: number): number {
+  if (turn < 25) return 1;
+  if (turn < 60) return 2;
+  return turn < 120 ? 3 : 4;
+}
 
 /**
  * Chance a row carries gold, and how much.
@@ -56,9 +71,12 @@ export function goldChance(turn: number): number {
   return 0.6;
 }
 
+/** Same shape as `ballAmount`: a late-run gold pickup should read as more
+ * than an early one, not repeat the same single digit for fifty turns. */
 export function goldAmount(turn: number): number {
-  if (turn < 50) return 1;
-  return turn < 100 ? 2 : 3;
+  if (turn < 25) return 1;
+  if (turn < 60) return 2;
+  return turn < 120 ? 3 : 5;
 }
 
 /** What one capsule costs. */

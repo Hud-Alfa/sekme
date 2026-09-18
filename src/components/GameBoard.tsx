@@ -73,7 +73,7 @@ function emptyFlight(): Flight {
   };
 }
 
-type CellsSnapshot = { kinds: number[]; hp: number[]; gold: number[] };
+type CellsSnapshot = { kinds: number[]; hp: number[]; amount: number[] };
 
 export type TurnProgress = { ballsCollected: number; goldCollected: number };
 
@@ -130,11 +130,12 @@ export function GameBoard({
   const tally = useSharedValue({ scored: 0, balls: 0, gold: 0 });
 
   // The board as flat arrays: what is in each cell, how much health it has
-  // left, and what a gold cell is worth. Rebuilt once per turn.
+  // left, and — for a pickup cell, ball or gold — how much it is worth.
+  // Rebuilt once per turn.
   const snapshot = useMemo(() => {
     const kinds: number[] = [];
     const hp: number[] = [];
-    const gold: number[] = [];
+    const amount: number[] = [];
 
     for (let r = 0; r < ROWS; r++) {
       for (let c = 0; c < COLUMNS; c++) {
@@ -143,10 +144,10 @@ export function GameBoard({
           item?.kind === 'block' ? 1 : item?.kind === 'ball' ? 2 : item?.kind === 'gold' ? 3 : 0,
         );
         hp.push(item?.kind === 'block' ? item.hp : 0);
-        gold.push(item?.kind === 'gold' ? item.amount : 0);
+        amount.push(item?.kind === 'ball' || item?.kind === 'gold' ? item.amount : 0);
       }
     }
-    return { kinds, hp, gold };
+    return { kinds, hp, amount };
   }, [board]);
 
   const cells = useSharedValue(snapshot);
@@ -194,16 +195,16 @@ export function GameBoard({
   // touched something, never on every frame — the block views need to be
   // told a hit happened, but the JS thread does not need 60 messages a second
   // to tell them.
-  // Per-cell gold amounts are fixed at spawn and never change mid-turn, so
+  // Per-cell pickup amounts are fixed at spawn and never change mid-turn, so
   // they are read from a ref rather than closed over directly — a plain
   // closure here would freeze on whatever `snapshot` was current the one
   // time this callback was created.
-  const goldRef = useRef(snapshot.gold);
-  goldRef.current = snapshot.gold;
+  const amountRef = useRef(snapshot.amount);
+  amountRef.current = snapshot.amount;
 
   const reportProgress = useCallback(
     (kinds: number[], hp: number[], ballsGot: number, goldGot: number) => {
-      setLiveCells({ kinds, hp, gold: goldRef.current });
+      setLiveCells({ kinds, hp, amount: amountRef.current });
       onProgress?.({ ballsCollected: ballsGot, goldCollected: goldGot });
     },
     [onProgress],
@@ -388,8 +389,9 @@ export function GameBoard({
               // Pickups do not deflect: a ball that bounced off a "+1" would
               // punish the player for collecting it.
               kinds[index] = 0;
-              if (kind === 2) ballsGot += 1;
-              else goldGot += cells.value.gold[index] ?? 0;
+              const pickupAmount = cells.value.amount[index] ?? 1;
+              if (kind === 2) ballsGot += pickupAmount;
+              else goldGot += pickupAmount;
             }
           }
         }
@@ -414,7 +416,7 @@ export function GameBoard({
       if (live[i] === 1) moving += 1;
     }
 
-    cells.value = { kinds, hp, gold: cells.value.gold };
+    cells.value = { kinds, hp, amount: cells.value.amount };
     flight.value = { px, py, vx, vy, live, queued, releaseTimer };
     tally.value = { scored, balls: ballsGot, gold: goldGot };
 
@@ -523,6 +525,9 @@ export function GameBoard({
             // An untouched pickup — original still describes it exactly.
             if (original.kind !== 'ball' && original.kind !== 'gold') return null;
             const isBall = original.kind === 'ball';
+            // The amount used to be a hardcoded "+1"/"₺" — now that pickups
+            // scale with turn (see curve.ts), showing the real number is
+            // what makes a late-run pickup actually read as worth more.
             return (
               <View
                 key={key}
@@ -538,13 +543,33 @@ export function GameBoard({
                   alignItems: 'center',
                   justifyContent: 'center',
                 }}>
-                <Text variant="caption" color={isBall ? 'text' : 'warning'}>
-                  {isBall ? '+1' : '₺'}
+                <Text variant="caption" color={isBall ? 'text' : 'warning'} numeric numberOfLines={1}>
+                  {isBall ? `+${original.amount ?? 1}` : `₺${original.amount ?? 1}`}
                 </Text>
               </View>
             );
           }),
         )}
+
+        {/* Always visible, not just while dragging: where the next shot
+            starts from — which is also exactly where the last ball came
+            home, since a turn's end sets launchX to that spot. Without
+            this the launch point was invisible until a finger was already
+            down aiming. */}
+        <View
+          pointerEvents="none"
+          style={{
+            position: 'absolute',
+            bottom: -1,
+            left: launchX * width - 7,
+            width: 14,
+            height: 14,
+            borderRadius: radius.pill,
+            borderWidth: 2,
+            borderColor: colors.accent,
+            backgroundColor: colors.bg,
+          }}
+        />
 
         <Animated.View pointerEvents="none" style={[{ position: 'absolute' }, aimLine]}>
           {/* A plain bar only showed heading, not destination — the arrowhead
