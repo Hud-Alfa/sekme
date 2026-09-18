@@ -14,6 +14,7 @@ import { useSettings, type ThemePreference } from '@/store/settings';
 import {
   Button,
   Card,
+  IconButton,
   ListRow,
   Screen,
   SegmentedControl,
@@ -100,7 +101,12 @@ export default function SettingsScreen() {
   return (
     <Screen scroll>
       <View style={{ gap: space.xl }}>
-        <Text variant="title">{tr.settings.title}</Text>
+        <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
+          <IconButton accessibilityLabel={tr.common.back} tinted onPress={() => router.back()}>
+            <Text variant="heading">‹</Text>
+          </IconButton>
+          <Text variant="title">{tr.settings.title}</Text>
+        </View>
 
         <Section title={tr.settings.appearance}>
           <View style={{ padding: space.lg, gap: space.md }}>
@@ -177,7 +183,6 @@ export default function SettingsScreen() {
           />
         </Section>
 
-        <Button label={tr.common.back} variant="secondary" onPress={() => router.back()} />
       </View>
 
       <Sheet
