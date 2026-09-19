@@ -9,7 +9,20 @@ import { formatNumber } from '@/lib/format';
 import { haptic } from '@/lib/haptics';
 import { useGame } from '@/store/game';
 import { useSettings } from '@/store/settings';
-import { Button, Confetti, IconButton, NumberRoll, Screen, Sheet, StatTile, space, Text, useColors, useScreen } from '@/ui';
+import {
+  Button,
+  Confetti,
+  IconButton,
+  NumberRoll,
+  radius,
+  Screen,
+  Sheet,
+  StatTile,
+  space,
+  Text,
+  useColors,
+  useScreen,
+} from '@/ui';
 
 /**
  * The board itself. It owns no rules and no physics — GameBoard runs the
@@ -71,16 +84,22 @@ export default function PlayScreen() {
   // board, leaving the panel's own top edge empty. They ride inside the
   // panel's frame now instead — GameBoard renders this at the frame's own
   // top, so that space actually holds something rather than just being
-  // border and background.
+  // border and background. The three stats themselves moved from bare
+  // stacked text to filled chips — a row of plain numbers on a busy board
+  // read as an afterthought; a chip each gives them a floor to sit on, the
+  // same "surfaceAlt behind a value" language `StatTile` uses elsewhere,
+  // just slim enough to fit next to the back/restart buttons. Skor gets the
+  // accent tone — the one other place besides a primary action this screen
+  // is allowed one, and it is this screen's own main data.
   const header = (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
       <IconButton accessibilityLabel={tr.common.back} tinted onPress={() => router.back()}>
         <Text variant="heading">‹</Text>
       </IconButton>
-      <View style={{ flex: 1, flexDirection: 'row', gap: space.lg }}>
-        <Stat label={tr.game.score} value={formatNumber(game.turn)} />
-        <Stat label={tr.game.best} value={formatNumber(progress.highScores[game.difficulty])} />
-        <Stat label={tr.game.gold} value={formatNumber(progress.gold)} />
+      <View style={{ flex: 1, flexDirection: 'row', gap: space.xs }}>
+        <StatChip label={tr.game.score} value={formatNumber(game.turn)} tone="accent" />
+        <StatChip label={tr.game.best} value={formatNumber(progress.highScores[game.difficulty])} />
+        <StatChip label={tr.game.gold} value={formatNumber(progress.gold)} />
       </View>
       {game.over ? null : (
         <IconButton accessibilityLabel={tr.game.restart} tinted onPress={() => setShowRestart(true)}>
@@ -196,13 +215,30 @@ export default function PlayScreen() {
   );
 }
 
-function Stat({ label, value }: { label: string; value: string }) {
+function StatChip({
+  label,
+  value,
+  tone = 'text',
+}: {
+  label: string;
+  value: string;
+  tone?: 'text' | 'accent';
+}) {
+  const colors = useColors();
   return (
-    <View>
-      <Text variant="caption" color="textMuted">
+    <View
+      style={{
+        flex: 1,
+        gap: 2,
+        paddingHorizontal: space.sm,
+        paddingVertical: space.xs,
+        borderRadius: radius.md,
+        backgroundColor: colors.surfaceAlt,
+      }}>
+      <Text variant="caption" color="textMuted" numberOfLines={1}>
         {label}
       </Text>
-      <Text variant="heading" numeric>
+      <Text variant="label" color={tone} numeric numberOfLines={1} adjustsFontSizeToFit>
         {value}
       </Text>
     </View>

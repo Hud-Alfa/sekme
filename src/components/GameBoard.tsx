@@ -9,6 +9,7 @@ import Animated, {
   withSequence,
   ZoomOut,
 } from 'react-native-reanimated';
+import Svg, { Polygon } from 'react-native-svg';
 
 import { findBall, type Ball } from '@/game/balls';
 import { EMPTY, type Board, type BlockShape, type Cell } from '@/game/board';
@@ -56,6 +57,21 @@ const BALL_POOL = 60;
 const BALL_RADIUS_RATIO = 0.14;
 /** Longest distance a ball may cover in one sub-step, as a share of a cell. */
 const MAX_STEP_RATIO = 0.35;
+/**
+ * Ceiling on how often a hit/pickup crosses to the JS thread and triggers a
+ * board re-render, in seconds. With forty balls out at once nearly every
+ * frame changes something, which used to mean up to sixty `setState` calls a
+ * second on the WHOLE grid — the JS thread cannot keep up with that, and the
+ * result was not a smooth 60fps of small updates but a growing backlog: a
+ * block already gone in the physics (`cells.value`, updated every frame
+ * regardless) would sit on screen for several frames until React finally
+ * caught up, reading as "some blocks don't disappear in time". Capping the
+ * RATE of updates — not skipping the final one, `cells.value` and `finish()`
+ * never depend on this — means React gets fewer, cheaper renders that it can
+ * actually keep up with, so the eventual update lands close to real time
+ * instead of queueing.
+ */
+const REPORT_INTERVAL = 1 / 24;
 /** Gap between balls as they leave the launcher. */
 const STAGGER_RATIO = 1.8;
 
@@ -195,6 +211,9 @@ export function GameBoard({
   const aim = useSharedValue({ x: 0, y: -1 });
   const aiming = useSharedValue(0);
   const tally = useSharedValue({ scored: 0, balls: 0, gold: 0 });
+  // Throttles how often a hit/pickup crosses to the JS thread — see the
+  // frame loop's own comment at the call site for why.
+  const lastReportAt = useSharedValue(-REPORT_INTERVAL);
   // A quick pulse on the collector ring exactly when a ball lands WITH
   // something to show for it — a small "it's home, and it counted" beat to
   // go with the count only climbing on landing now, not mid-flight.
@@ -235,24 +254,33 @@ export function GameBoard({
   // one-render lag here would pair a stale liveCells index against a fresh
   // board index and briefly show the wrong hp on the wrong cell.
   //
-  // CRITICAL: `cells.value` is reset here too, and ONLY here — guarded on the
-  // board actually changing. It used to be assigned unconditionally on every
+  // CRITICAL: `cells.value` is reset on the same board change too, but NOT
+  // here alongside it — it used to be assigned unconditionally on every
   // render, which looked harmless (`snapshot` is referentially stable within
   // a turn) but was not: `reportProgress` below triggers a React re-render on
   // every hit, and every one of those re-renders was overwriting cells.value
   // back to this turn's STARTING snapshot, erasing whatever the frame loop
   // had just mutated it to. That is why a destroyed block or a collected
   // pickup could come back mid-turn — the damage was real for one frame, then
-  // silently undone by the very next render.
+  // silently undone by the very next render. Gating it on the board change
+  // (below) fixed that; it is a plain `useEffect` rather than sharing this
+  // `if` with the two React state updates only because a shared value is not
+  // React state — writing one during render is a real (if harmless here)
+  // Reanimated strict-mode warning, and nothing here needs it to land in
+  // this exact render: the frame loop that reads `cells.value` is inactive
+  // between turns, and stays that way until the next fired shot, which is
+  // well after this effect has already run.
   const [renderedBoard, setRenderedBoard] = useState(board);
   const [liveCells, setLiveCells] = useState<CellsSnapshot>(snapshot);
   if (board !== renderedBoard) {
     setRenderedBoard(board);
     setLiveCells(snapshot);
+  }
+  useEffect(() => {
     cells.value = snapshot;
     // The board actually caught up — safe to accept a new shot again.
     turnLocked.value = 0;
-  }
+  }, [snapshot, cells, turnLocked]);
 
   // Ball powers ride along in the same shared value as the geometry, not a
   // separate one — the frame loop already reads `g.*` once per frame, and
@@ -619,7 +647,14 @@ export function GameBoard({
     tally.value = { scored, balls: ballsGot, gold: goldGot };
 
     if (broke) runOnJS(onBreak)(brokeAt);
-    if (changed) runOnJS(reportProgress)(kinds, hp, ballsGot, goldGot);
+    // A block actually breaking always reports immediately — that is the one
+    // moment "did it disappear yet" is judged on. A plain hp tick (still
+    // `changed`, nothing `broke`) waits for the next open slot in the rate
+    // cap instead of firing on its own frame.
+    if (changed && (broke || elapsed.value - lastReportAt.value >= REPORT_INTERVAL)) {
+      lastReportAt.value = elapsed.value;
+      runOnJS(reportProgress)(kinds, hp, ballsGot, goldGot);
+    }
 
     if (moving === 0 && queued === 0) {
       flying.value = 0;
@@ -695,6 +730,7 @@ export function GameBoard({
       elapsed.value = 0;
       speedScale.value = 1;
       lastLanding.value = -1;
+      lastReportAt.value = -REPORT_INTERVAL;
       flying.value = 1;
       runOnJS(setInFlight)(true);
     });
@@ -1134,21 +1170,38 @@ function BlockCell({
           </Text>
         </Animated.View>
       ) : (
-        // A triangle is always drawn filled (the border trick that makes it
-        // a triangle at all has no clean "outline only" version) — even on a
-        // neon theme, just at the same faded-with-damage opacity as squares.
+        // Hollow on a neon theme, the same way a square block is — outline
+        // only, with the same glow — instead of always solid fill regardless
+        // of theme. SVG draws the exact three vertices `hitTriangle` treats
+        // as the solid half of the cell (`trianglePoints`), so there is no
+        // separate "does the drawn shape match the collision shape" question
+        // the old CSS border-trick kept getting wrong.
         //
         // The hp NUMBER is deliberately not drawn in here. It used to be an
         // absolutely-positioned Text right next to the border-trick View
-        // below — and on this renderer, that combination made the text
-        // never paint at all, at any colour, at any zIndex/elevation
-        // (confirmed live: a bright lime background + huge red digits
-        // still didn't show with the triangle View present as a sibling;
-        // removing that sibling made the exact same Text appear instantly).
-        // The number is drawn by `TriangleNumber` instead, as a completely
-        // separate element at the grid level — see the render loop below.
-        <Animated.View style={[{ width: size, height: size }, animatedStyle, { opacity: 0.4 + intensity * 0.6 }]}>
-          <View pointerEvents="none" style={triangleBorderStyle(shape, size, color)} />
+        // this replaced — and on this renderer, that combination made the
+        // text never paint at all, at any colour, at any zIndex/elevation
+        // (confirmed live: a bright lime background + huge red digits still
+        // didn't show with that triangle View present as a sibling; removing
+        // the sibling made the exact same Text appear instantly). Untested
+        // whether an SVG sibling has the same problem, so the number stays
+        // split out via `TriangleNumber` at the grid level rather than
+        // re-risking a bug that took a while to pin down the first time.
+        <Animated.View
+          style={[
+            { width: size, height: size },
+            animatedStyle,
+            { opacity: 0.4 + intensity * 0.6 },
+            outline && glow ? { boxShadow: `0 0 ${Math.round(size * 0.22)}px ${color}` } : null,
+          ]}>
+          <Svg width={size} height={size} pointerEvents="none">
+            <Polygon
+              points={trianglePoints(shape, size)}
+              fill={outline ? 'transparent' : color}
+              stroke={outline ? color : 'none'}
+              strokeWidth={outline ? 2 : 0}
+            />
+          </Svg>
         </Animated.View>
       )}
     </Animated.View>
@@ -1156,62 +1209,38 @@ function BlockCell({
 }
 
 /**
- * The classic zero-size-box border trick: two adjacent border widths at
- * `size`, one coloured and the rest transparent, forms a right triangle.
- *
- * A previous version of this function anchored 'tl'/'br' at the cell's
- * opposite corner (`left: size`) on the theory that the anchor had to sit
- * at the corner away from the coloured legs. That theory was never actually
- * checked against a render and was wrong on both counts: 'tr'/'bl' rendered
- * mirrored (the anti-diagonal shape instead of the main-diagonal one — a
- * "tr" triangle looked exactly like a "tl" one), and 'tl'/'br' rendered
- * entirely outside the cell's own box. Reflection off the triangle's
- * hypotenuse (`hitTriangle` in `game/physics.ts`) was always correct, so the
- * ball was bouncing off a diagonal the player could not see — it looked
- * like it was ignoring the triangle's angle.
- *
- * Verified this time by rendering all four combinations standalone and
- * reading back which pixels lit up, not by hand: every shape below anchors
- * at the cell's own top-left corner (left:0, top:0) and picks one of two
- * border-width pairs — right+bottom for the anti-diagonal pair (tl/br),
- * left+bottom for the main-diagonal pair (tr/bl) — which is also simpler
- * than the old two-different-anchors version.
+ * The three corners of whichever half of the cell `hitTriangle` (in
+ * `game/physics.ts`) treats as solid, as an SVG `points` string — drawing
+ * the collision shape directly rather than approximating it with a CSS
+ * border trick removes the entire class of "does the drawn shape match the
+ * physics shape" bug a previous version of this kept getting wrong (a
+ * mirrored diagonal on two of the four shapes, then a shape rendered
+ * entirely outside its own cell on the other two).
  */
-function triangleBorderStyle(shape: 'tl' | 'tr' | 'bl' | 'br', size: number, color: string) {
-  const base = {
-    position: 'absolute' as const,
-    left: 0,
-    top: 0,
-    width: 0,
-    height: 0,
-    borderStyle: 'solid' as const,
+function trianglePoints(shape: 'tl' | 'tr' | 'bl' | 'br', size: number): string {
+  const corners: Record<'tl' | 'tr' | 'bl' | 'br', [number, number][]> = {
+    tl: [
+      [0, 0],
+      [size, 0],
+      [0, size],
+    ],
+    tr: [
+      [0, 0],
+      [size, 0],
+      [size, size],
+    ],
+    bl: [
+      [0, 0],
+      [0, size],
+      [size, size],
+    ],
+    br: [
+      [size, 0],
+      [0, size],
+      [size, size],
+    ],
   };
-
-  if (shape === 'tl' || shape === 'br') {
-    return {
-      ...base,
-      borderTopWidth: 0,
-      borderLeftWidth: 0,
-      borderRightWidth: size,
-      borderBottomWidth: size,
-      borderTopColor: 'transparent',
-      borderLeftColor: 'transparent',
-      borderRightColor: shape === 'tl' ? color : 'transparent',
-      borderBottomColor: shape === 'br' ? color : 'transparent',
-    };
-  }
-
-  return {
-    ...base,
-    borderTopWidth: 0,
-    borderRightWidth: 0,
-    borderLeftWidth: size,
-    borderBottomWidth: size,
-    borderTopColor: 'transparent',
-    borderRightColor: 'transparent',
-    borderLeftColor: shape === 'bl' ? color : 'transparent',
-    borderBottomColor: shape === 'tr' ? color : 'transparent',
-  };
+  return corners[shape].map(([x, y]) => `${x},${y}`).join(' ');
 }
 
 /** Where the hp number sits — the centroid of whichever half of the cell is
@@ -1258,24 +1287,26 @@ function Dot({
   });
 
   // Higher rarity, more glow — the trail field was always in the catalogue,
-  // it just never reached a view. A plain filled circle read the same for
-  // every ball regardless of what a capsule actually paid for. A neon board
-  // theme pushes it further still, to match the blocks' own glow.
-  const glowSize = size * (1.7 + Math.min(ball.trail, 12) / 8) * (glow ? 1.15 : 1);
+  // it just never reached a view. Toned down from the first version of this,
+  // which gave every ball the same fairly large, fairly bright halo: fine
+  // for one ball, but forty of them overlapping read as visual noise rather
+  // than forty distinct balls. Common balls (no trail) now barely glow at
+  // all; the halo is where rarity actually shows.
+  const glowSize = size * (1.3 + Math.min(ball.trail, 12) / 10) * (glow ? 1.1 : 1);
+  const glowOpacity = (ball.trail > 0 ? 0.22 : 0.08) * (glow ? 1.2 : 1);
 
   // The rim used to be a fixed near-white, which all but vanished on the
   // light theme's near-white background — the exact "klasik top" contrast
   // complaint this fixes. Flipping it dark in light mode keeps every ball,
   // not only klasik, readable regardless of theme.
   const rimColor = scheme === 'light' ? 'rgba(11,11,15,0.55)' : 'rgba(255,255,255,0.85)';
-  const highlightColor = scheme === 'light' ? 'rgba(11,11,15,0.35)' : 'rgba(255,255,255,0.7)';
 
   return (
     <Animated.View pointerEvents="none" style={[{ position: 'absolute' }, style]}>
-      {/* Every ball gets a soft glow, not only the ones with a trail — a
-          flat-colored dot the size of a fingertip disappears against a
-          board full of similarly-toned blocks without one. Rarity just
-          makes it bigger. */}
+      {/* Every ball still gets a soft glow, just a much quieter one than
+          before — a flat-colored dot the size of a fingertip disappears
+          against a board full of similarly-toned blocks without one, but
+          the glow only needs to be a hint, not a second circle. */}
       <View
         style={{
           position: 'absolute',
@@ -1285,42 +1316,22 @@ function Dot({
           height: glowSize,
           borderRadius: glowSize / 2,
           backgroundColor: ball.color,
-          opacity: (ball.trail > 0 ? 0.28 : 0.16) * (glow ? 1.3 : 1),
+          opacity: glowOpacity,
         }}
       />
-      {/* A dark ring first, so the ball reads against light blocks and a
-          light background alike, then the fill, then a rim on top — three
-          tones instead of one flat circle. The ring stays translucent black
-          on both schemes (it is a shadow, not a highlight); the rim flips. */}
+      {/* One ringed circle instead of three stacked views (a dark backing
+          ring, a fill, and a specular highlight) — the border alone still
+          reads against both light and dark surfaces, since `rimColor`
+          already flips per scheme, and cutting the other two views is most
+          of what actually reduces the clutter when many balls overlap. */}
       <View
         style={{
           width: size,
           height: size,
           borderRadius: size / 2,
-          backgroundColor: '#00000040',
-          alignItems: 'center',
-          justifyContent: 'center',
-        }}>
-        <View
-          style={{
-            width: size * 0.86,
-            height: size * 0.86,
-            borderRadius: (size * 0.86) / 2,
-            backgroundColor: ball.color,
-            borderWidth: Math.max(1.5, size * 0.12),
-            borderColor: rimColor,
-          }}
-        />
-      </View>
-      <View
-        style={{
-          position: 'absolute',
-          left: size * 0.24,
-          top: size * 0.2,
-          width: size * 0.3,
-          height: size * 0.3,
-          borderRadius: size * 0.15,
-          backgroundColor: highlightColor,
+          backgroundColor: ball.color,
+          borderWidth: Math.max(1.5, size * 0.12),
+          borderColor: rimColor,
         }}
       />
     </Animated.View>

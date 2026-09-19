@@ -7,7 +7,7 @@ import { tr } from '@/i18n/tr';
 import { formatNumber } from '@/lib/format';
 import { useGame } from '@/store/game';
 import { useSettings } from '@/store/settings';
-import { Button, IconButton, Screen, Sheet, space, Text, useScreen } from '@/ui';
+import { Button, Card, IconButton, radius, Screen, Sheet, StatTile, space, Text, useColors, useScreen } from '@/ui';
 
 const DIFFICULTIES: { id: Difficulty; label: string; hint: string }[] = [
   { id: 'kolay', label: tr.game.kolay, hint: tr.game.kolayHint },
@@ -22,6 +22,7 @@ const DIFFICULTIES: { id: Difficulty; label: string; hint: string }[] = [
  */
 export default function HomeScreen() {
   const router = useRouter();
+  const colors = useColors();
   const onboardingDone = useSettings((s) => s.onboardingDone);
 
   const load = useGame((s) => s.load);
@@ -56,9 +57,9 @@ export default function HomeScreen() {
     <Screen>
       <View style={{ flex: 1, gap: space.xl }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
-          <View style={{ flex: 1, flexDirection: 'row', gap: space.lg }}>
-            <Stat label={tr.game.best} value={formatNumber(bestScore)} />
-            <Stat label={tr.game.gold} value={formatNumber(progress.gold)} />
+          <View style={{ flex: 1, flexDirection: 'row', gap: space.md }}>
+            <StatTile value={formatNumber(bestScore)} label={tr.game.best} />
+            <StatTile value={formatNumber(progress.gold)} label={tr.game.gold} tone="warning" />
           </View>
           <IconButton
             accessibilityLabel={tr.settings.title}
@@ -68,33 +69,60 @@ export default function HomeScreen() {
           </IconButton>
         </View>
 
-        <View style={{ flex: 1, justifyContent: 'center', gap: space.xxxl }}>
-          <View style={{ gap: space.xs, alignItems: 'center' }}>
-            <Text variant="display">{tr.app.name}</Text>
-            <Text variant="body" color="textMuted">
-              {tr.app.tagline}
-            </Text>
+        <View style={{ flex: 1, justifyContent: 'center', gap: space.xxl }}>
+          <View style={{ gap: space.md, alignItems: 'center' }}>
+            {/* A small brand mark rather than the title floating on bare
+                black — a ring and a dot, the same launch-marker shape the
+                board itself uses, so the empty-black-screen complaint has
+                at least one graphical anchor before the buttons start. */}
+            <View
+              style={{
+                width: 56,
+                height: 56,
+                borderRadius: radius.pill,
+                borderWidth: 2,
+                borderColor: colors.accent,
+                alignItems: 'center',
+                justifyContent: 'center',
+              }}>
+              <View
+                style={{
+                  width: 14,
+                  height: 14,
+                  borderRadius: radius.pill,
+                  backgroundColor: colors.accent,
+                }}
+              />
+            </View>
+            <View style={{ gap: space.xs, alignItems: 'center' }}>
+              <Text variant="display">{tr.app.name}</Text>
+              <Text variant="body" color="textMuted">
+                {tr.app.tagline}
+              </Text>
+            </View>
           </View>
 
-          <View style={{ gap: space.md, minHeight: screenHeight * 0.22 }}>
-            {ready ? (
-              <>
-                {hasRun ? (
-                  <Button label={tr.game.resume} onPress={() => router.push('/oyun')} />
-                ) : null}
-                <Button
-                  label={tr.game.newGame}
-                  variant={hasRun ? 'secondary' : 'primary'}
-                  onPress={() => setShowDifficulty(true)}
-                />
-                <Button
-                  label={tr.game.store}
-                  variant="secondary"
-                  onPress={() => router.push('/kapsul')}
-                />
-              </>
-            ) : null}
-          </View>
+          <Card style={{ minHeight: screenHeight * 0.22, justifyContent: 'center' }}>
+            <View style={{ gap: space.md }}>
+              {ready ? (
+                <>
+                  {hasRun ? (
+                    <Button label={tr.game.resume} onPress={() => router.push('/oyun')} />
+                  ) : null}
+                  <Button
+                    label={tr.game.newGame}
+                    variant={hasRun ? 'secondary' : 'primary'}
+                    onPress={() => setShowDifficulty(true)}
+                  />
+                  <Button
+                    label={tr.game.store}
+                    variant="secondary"
+                    onPress={() => router.push('/kapsul')}
+                  />
+                </>
+              ) : null}
+            </View>
+          </Card>
         </View>
       </View>
 
@@ -122,18 +150,5 @@ export default function HomeScreen() {
         </View>
       </Sheet>
     </Screen>
-  );
-}
-
-function Stat({ label, value }: { label: string; value: string }) {
-  return (
-    <View>
-      <Text variant="caption" color="textMuted">
-        {label}
-      </Text>
-      <Text variant="heading" numeric>
-        {value}
-      </Text>
-    </View>
   );
 }
