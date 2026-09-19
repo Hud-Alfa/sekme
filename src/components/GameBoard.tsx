@@ -941,6 +941,13 @@ export function GameBoard({
           ))}
         </View>
       </GestureDetector>
+
+      {/* Whatever is left below the launcher after a column-width-bound grid
+          fills a taller-than-wide frame — a real design now, not a gap.
+          Grounded at the bottom, not centred: a turret sits on something. */}
+      <View style={{ flex: 1, width, alignItems: 'center', justifyContent: 'flex-end', paddingBottom: space.lg }}>
+        <LauncherConsole accent={boardAccent} ballColor={ball.color} outline={outline} scheme={scheme} />
+      </View>
       </View>
     </View>
   );
@@ -1266,5 +1273,101 @@ function Shard({
     <Animated.View
       style={[{ position: 'absolute', width: 6, height: 6, borderRadius: 1.5, backgroundColor: color }, style]}
     />
+  );
+}
+
+/**
+ * The launcher's own silhouette — a rounded body on a finned base, drawn
+ * from the same primitives as everything else in this file (borders,
+ * rounded corners, the triangle trick from `BlockCell`) rather than an
+ * image, so it scales cleanly and never looks out of place next to the
+ * blocks. Sits at the bottom of whatever space is left under the launcher —
+ * the one piece of this screen that was previously just empty frame.
+ */
+function LauncherConsole({
+  accent,
+  ballColor,
+  outline,
+  scheme,
+}: {
+  accent: string;
+  ballColor: string;
+  outline: boolean;
+  scheme: 'light' | 'dark';
+}) {
+  const bodyWidth = 76;
+  const bodyHeight = 84;
+  const portSize = 26;
+  // The rim, like the ball's own rim in `Dot`, has to flip with the scheme
+  // or it vanishes against a light background — same fix, same reason.
+  const portBorder = outline ? accent : scheme === 'light' ? 'rgba(11,11,15,0.28)' : 'rgba(255,255,255,0.55)';
+
+  return (
+    <View style={{ alignItems: 'center' }}>
+      {/* The body — filled on Klasik, outlined (and glowing, via the parent
+          frame's own shadow) on a neon theme, exactly like a block. */}
+      <View
+        style={[
+          {
+            width: bodyWidth,
+            height: bodyHeight,
+            borderTopLeftRadius: bodyWidth / 2,
+            borderTopRightRadius: bodyWidth / 2,
+            borderBottomLeftRadius: radius.md,
+            borderBottomRightRadius: radius.md,
+            borderWidth: 2,
+            borderColor: accent,
+            alignItems: 'center',
+            justifyContent: 'center',
+          },
+          outline ? { backgroundColor: 'transparent' } : { backgroundColor: `${accent}1F` },
+        ]}>
+        {/* The one part of this console that is not purely thematic — the
+            viewport carries the EQUIPPED BALL's own colour, so the console
+            reads as "yours", the way the launcher badge above it already
+            does with its own little coloured dot. */}
+        <View
+          style={{
+            width: portSize,
+            height: portSize,
+            borderRadius: radius.pill,
+            backgroundColor: ballColor,
+            borderWidth: 2,
+            borderColor: portBorder,
+          }}
+        />
+      </View>
+
+      {/* A base plate with two angled fins — the silhouette detail that
+          actually reads as "a launcher" instead of a rounded box standing
+          on its own. */}
+      <View style={{ flexDirection: 'row', alignItems: 'flex-end' }}>
+        <View
+          style={{
+            width: 0,
+            height: 0,
+            borderLeftWidth: 12,
+            borderBottomWidth: 20,
+            borderLeftColor: 'transparent',
+            borderBottomColor: accent,
+            opacity: 0.85,
+            marginRight: -4,
+          }}
+        />
+        <View style={{ width: bodyWidth * 0.7, height: 12, borderRadius: radius.sm, backgroundColor: accent }} />
+        <View
+          style={{
+            width: 0,
+            height: 0,
+            borderRightWidth: 12,
+            borderBottomWidth: 20,
+            borderRightColor: 'transparent',
+            borderBottomColor: accent,
+            opacity: 0.85,
+            marginLeft: -4,
+          }}
+        />
+      </View>
+    </View>
   );
 }
