@@ -47,7 +47,11 @@ export const useGame = create<Store>((set, get) => ({
   lastPull: null,
 
   load: async () => {
-    const [progress, run] = await Promise.all([repo.loadProgress(), repo.loadRun()]);
+    // Sequential, not Promise.all — two calls hitting the same SQLite
+    // connection at once is exactly the shape of the NullPointerException
+    // this session chased down (see resolveTurn below for the full story).
+    const progress = await repo.loadProgress();
+    const run = await repo.loadRun();
     set({ ready: true, progress, game: run });
   },
 
@@ -78,10 +82,15 @@ export const useGame = create<Store>((set, get) => ({
     if (!next.over) {
       if (goldEarned > 0) set({ progress: bankedProgress });
       // Saved after every turn, so a phone call mid-run costs nothing.
-      await Promise.all([
-        goldEarned > 0 ? repo.saveProgress(bankedProgress) : Promise.resolve(),
-        repo.saveRun(next),
-      ]);
+      // Sequential, not Promise.all: two writes racing on the same SQLite
+      // connection at once was the actual cause of a
+      // `NativeDatabase.prepareAsync` NullPointerException a player hit —
+      // banking gold every turn (instead of only at the end of a run, as
+      // before) made two concurrent writes a normal thing to happen instead
+      // of a rare one. The native binding does not appear to guarantee
+      // that two `runAsync` calls issued in the same tick queue safely.
+      if (goldEarned > 0) await repo.saveProgress(bankedProgress);
+      await repo.saveRun(next);
       return;
     }
 
@@ -97,11 +106,10 @@ export const useGame = create<Store>((set, get) => ({
     };
 
     set({ progress: finalProgress });
-    await Promise.all([
-      repo.saveProgress(finalProgress),
-      repo.saveRun(null),
-      repo.recordRun(next.turn, next.gold),
-    ]);
+    // Sequential for the same reason as above.
+    await repo.saveProgress(finalProgress);
+    await repo.saveRun(null);
+    await repo.recordRun(next.turn, next.gold);
   },
 
   buyCapsule: async () => {

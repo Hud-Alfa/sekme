@@ -717,7 +717,13 @@ export function GameBoard({
           panel's own top edge, not a separate row above it. */}
       {header ? <View style={{ paddingHorizontal: space.md, paddingTop: space.sm }}>{header}</View> : null}
 
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+      {/* Top-anchored, not centred — blocks start right under the header,
+          using the space that used to sit empty above the grid. Whatever
+          slack is left over (the grid is column-width-bound, so there
+          usually is some) collects below the launcher instead, inside the
+          frame's own themed background rather than as a gap above the
+          blocks. */}
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'flex-start' }}>
       <GestureDetector gesture={gesture}>
         <View style={{ width, height: height + LAUNCHER_STRIP }}>
           {/* A faint outline per cell, occupied or not — an empty row used to
@@ -742,22 +748,21 @@ export function GameBoard({
             )),
           )}
 
-          {/* A persistent guide, not just the drag-time aim line — the aim
-              line only exists while a finger is down, so between shots there
-              was nothing marking which column the next one starts from. This
-              stays up the whole time, themed like the rest of the frame, and
-              sits under the blocks so a filled column still reads as filled
-              first. */}
+          {/* A horizontal divider between the blocks' territory and the
+              ball's — the nine-row grid above it, the launcher strip below,
+              so the two zones read as two zones instead of one tall field
+              that happens to have a marker near the bottom. Themed like
+              everything else in the frame. */}
           <View
             pointerEvents="none"
             style={{
               position: 'absolute',
-              left: launchX * width - 1,
-              top: 0,
-              width: 2,
-              height,
+              left: 0,
+              top: height - 1,
+              width,
+              height: 2,
               backgroundColor: boardAccent,
-              opacity: outline ? 0.45 : 0.3,
+              opacity: outline ? 0.5 : 0.35,
             }}
           />
 

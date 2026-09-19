@@ -28,16 +28,27 @@ const migrations: string[] = [
 ];
 
 let database: SQLite.SQLiteDatabase | null = null;
+// Memoizes the IN-FLIGHT open, not just the resolved connection — two
+// callers racing before the first `openDatabaseAsync` resolves would
+// otherwise each open their own connection to the same file, and a second
+// connection outliving or crossing the first is exactly the kind of thing
+// that surfaces as a native NullPointerException later, not at open time.
+let opening: Promise<SQLite.SQLiteDatabase> | null = null;
 
 export async function getDb(): Promise<SQLite.SQLiteDatabase> {
   if (database) return database;
+  if (opening) return opening;
 
-  const db = await SQLite.openDatabaseAsync(DB_NAME);
-  await db.execAsync('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
-  await migrate(db);
+  opening = (async () => {
+    const db = await SQLite.openDatabaseAsync(DB_NAME);
+    await db.execAsync('PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;');
+    await migrate(db);
 
-  database = db;
-  return db;
+    database = db;
+    return db;
+  })();
+
+  return opening;
 }
 
 async function migrate(db: SQLite.SQLiteDatabase): Promise<void> {
