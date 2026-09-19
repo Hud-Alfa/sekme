@@ -134,6 +134,9 @@ type GameBoardProps = {
       jumping once at the end. */
   onProgress?: (progress: TurnProgress) => void;
   locked: boolean;
+  /** The run's own game-over flag — distinct from `locked`, which is also
+   * true mid-turn while a shot resolves. Drives the launcher robot's face. */
+  over?: boolean;
 };
 
 export function GameBoard({
@@ -148,6 +151,7 @@ export function GameBoard({
   onTurnComplete,
   onProgress,
   locked,
+  over,
 }: GameBoardProps) {
   const colors = useColors();
   const { scheme } = useTheme();
@@ -159,6 +163,13 @@ export function GameBoard({
   // headers, buttons and everything outside the play field stay the series'
   // one fixed accent, per `tasarim-sistemi`.
   const boardAccent = theme.accent ?? colors.accent;
+
+  // The launcher robot's mood — a block sitting in the very last row is one
+  // missed shot away from ending the run, which is the moment "gidişat"
+  // (how the run is going) actually turns bad, not some arbitrary fullness
+  // threshold. Game-over itself wins over an in-progress board reading.
+  const bottomRowFull = (board[ROWS - 1] ?? []).some((c) => c.kind === 'block');
+  const mood: 'happy' | 'worried' | 'sad' = over ? 'sad' : bottomRowFull ? 'worried' : 'happy';
 
   const cell = width / COLUMNS;
   const height = cell * ROWS;
@@ -1026,7 +1037,14 @@ export function GameBoard({
           the OUTER wrapper above is the one deciding where the leftover
           space goes (centred, around the whole group), not this one. */}
       <View style={{ width, alignItems: 'center', paddingTop: space.xs }}>
-        <LauncherConsole accent={boardAccent} ballColor={ball.color} outline={outline} scheme={scheme} />
+        <LauncherConsole
+          accent={boardAccent}
+          ballColor={ball.color}
+          outline={outline}
+          scheme={scheme}
+          palette={theme.palette}
+          mood={mood}
+        />
       </View>
       </View>
     </View>
@@ -1139,50 +1157,60 @@ function BlockCell({
 
 /**
  * The classic zero-size-box border trick: two adjacent border widths at
- * `size`, one coloured and the rest transparent, forms a right triangle. The
- * anchor point (where the 0×0 box itself sits) has to be the cell's OWN
- * corner opposite the coloured legs — verified by hand for all four shapes
- * against `game/physics.ts`'s `hitTriangle`, so the picture matches the
- * collision exactly. See the derivation in this session's notes if this
- * ever needs to change; it is easy to get a mirrored or rotated shape here
- * without the numbers actually being wrong anywhere else.
+ * `size`, one coloured and the rest transparent, forms a right triangle.
+ *
+ * A previous version of this function anchored 'tl'/'br' at the cell's
+ * opposite corner (`left: size`) on the theory that the anchor had to sit
+ * at the corner away from the coloured legs. That theory was never actually
+ * checked against a render and was wrong on both counts: 'tr'/'bl' rendered
+ * mirrored (the anti-diagonal shape instead of the main-diagonal one — a
+ * "tr" triangle looked exactly like a "tl" one), and 'tl'/'br' rendered
+ * entirely outside the cell's own box. Reflection off the triangle's
+ * hypotenuse (`hitTriangle` in `game/physics.ts`) was always correct, so the
+ * ball was bouncing off a diagonal the player could not see — it looked
+ * like it was ignoring the triangle's angle.
+ *
+ * Verified this time by rendering all four combinations standalone and
+ * reading back which pixels lit up, not by hand: every shape below anchors
+ * at the cell's own top-left corner (left:0, top:0) and picks one of two
+ * border-width pairs — right+bottom for the anti-diagonal pair (tl/br),
+ * left+bottom for the main-diagonal pair (tr/bl) — which is also simpler
+ * than the old two-different-anchors version.
  */
 function triangleBorderStyle(shape: 'tl' | 'tr' | 'bl' | 'br', size: number, color: string) {
   const base = {
     position: 'absolute' as const,
+    left: 0,
+    top: 0,
     width: 0,
     height: 0,
     borderStyle: 'solid' as const,
   };
 
-  if (shape === 'tr' || shape === 'bl') {
+  if (shape === 'tl' || shape === 'br') {
     return {
       ...base,
-      left: 0,
-      top: 0,
       borderTopWidth: 0,
       borderLeftWidth: 0,
       borderRightWidth: size,
       borderBottomWidth: size,
       borderTopColor: 'transparent',
       borderLeftColor: 'transparent',
-      borderRightColor: shape === 'tr' ? color : 'transparent',
-      borderBottomColor: shape === 'bl' ? color : 'transparent',
+      borderRightColor: shape === 'tl' ? color : 'transparent',
+      borderBottomColor: shape === 'br' ? color : 'transparent',
     };
   }
 
   return {
     ...base,
-    left: size,
-    top: 0,
     borderTopWidth: 0,
     borderRightWidth: 0,
     borderLeftWidth: size,
     borderBottomWidth: size,
     borderTopColor: 'transparent',
     borderRightColor: 'transparent',
-    borderLeftColor: shape === 'tl' ? color : 'transparent',
-    borderBottomColor: shape === 'br' ? color : 'transparent',
+    borderLeftColor: shape === 'bl' ? color : 'transparent',
+    borderBottomColor: shape === 'tr' ? color : 'transparent',
   };
 }
 
@@ -1367,11 +1395,22 @@ function LauncherConsole({
   ballColor,
   outline,
   scheme,
+  palette,
+  mood = 'happy',
 }: {
   accent: string;
   ballColor: string;
   outline: boolean;
   scheme: 'light' | 'dark';
+  /** `gokkusagi`'s per-block palette, if the active theme has one. The
+   * blocks already cycle through it; without this the robot and marker
+   * were the one thing on a "rainbow" board that stayed a single flat
+   * colour, which read as mismatched rather than personalised. */
+  palette?: string[];
+  /** Reflects how the run is going: a block one row from the bottom line
+   * ('worried') or the run already over ('sad') get their own face,
+   * everything else keeps the default. */
+  mood?: 'happy' | 'worried' | 'sad';
 }) {
   // The rim, like the ball's own rim in `Dot`, has to flip with the scheme
   // or it vanishes against a light background — same fix, same reason.
@@ -1381,40 +1420,86 @@ function LauncherConsole({
     : { backgroundColor: `${accent}1F`, borderWidth: 2, borderColor: accent };
   const glow = outline ? { boxShadow: `0 0 10px ${accent}66` } : null;
 
+  // Trim colour for a given part: cycles through the theme's own palette
+  // when it has one (so the robot picks up the SAME hues as the blocks,
+  // never an arbitrary outside colour — `accent` itself is always the
+  // palette's own first entry), falls back to the flat accent for every
+  // other theme, unchanged from before.
+  const trim = (i: number) => (palette && palette.length > 0 ? palette[i % palette.length]! : accent);
+
   return (
     <View style={{ alignItems: 'center' }}>
       {/* Antenna — two angled struts with a spark at each tip, the detail
           that reads as "a small machine" rather than a plain box. */}
       <View style={{ flexDirection: 'row', gap: 16 }}>
-        <View style={{ width: 2, height: 11, backgroundColor: accent, opacity: 0.9, transform: [{ rotate: '-16deg' }] }} />
-        <View style={{ width: 2, height: 11, backgroundColor: accent, opacity: 0.9, transform: [{ rotate: '16deg' }] }} />
+        <View style={{ width: 2, height: 11, backgroundColor: trim(2), opacity: 0.9, transform: [{ rotate: '-16deg' }] }} />
+        <View style={{ width: 2, height: 11, backgroundColor: trim(3), opacity: 0.9, transform: [{ rotate: '16deg' }] }} />
       </View>
       <View style={{ flexDirection: 'row', gap: 10, marginTop: -2, marginBottom: 3 }}>
-        <View style={{ width: 4, height: 4, borderRadius: 2, backgroundColor: accent }} />
-        <View style={{ width: 4, height: 4, borderRadius: 2, backgroundColor: accent }} />
+        <View style={{ width: 4, height: 4, borderRadius: 2, backgroundColor: trim(2) }} />
+        <View style={{ width: 4, height: 4, borderRadius: 2, backgroundColor: trim(3) }} />
       </View>
 
-      {/* Head — an actual face now, not just a lens: two eyes and a small
-          smile, drawn with the same border tricks as the smile-shaped
-          bottom-rounded mouth below. The eyes flip with the scheme like the
-          lens rim used to, for the same reason — a fixed colour vanishes
-          against one of the two backgrounds otherwise. */}
+      {/* Head — the face changes with `mood`: a smile normally, a small
+          open "o" when a block is one row from the bottom line, a frown
+          once the run is actually over. The eyes flip with the scheme like
+          the lens rim used to, for the same reason — a fixed colour
+          vanishes against one of the two backgrounds otherwise. */}
       <View style={[{ width: 34, height: 26, borderRadius: radius.sm, alignItems: 'center', justifyContent: 'center', gap: 3 }, panel, glow]}>
         <View style={{ flexDirection: 'row', gap: 7 }}>
-          <View style={{ width: 5, height: 5, borderRadius: radius.pill, backgroundColor: lensRim }} />
-          <View style={{ width: 5, height: 5, borderRadius: radius.pill, backgroundColor: lensRim }} />
+          {mood === 'sad' ? (
+            <>
+              <View style={{ width: 5, height: 1.5, borderRadius: 1, backgroundColor: lensRim }} />
+              <View style={{ width: 5, height: 1.5, borderRadius: 1, backgroundColor: lensRim }} />
+            </>
+          ) : (
+            <>
+              <View
+                style={{
+                  width: mood === 'worried' ? 6 : 5,
+                  height: mood === 'worried' ? 6 : 5,
+                  borderRadius: radius.pill,
+                  backgroundColor: lensRim,
+                }}
+              />
+              <View
+                style={{
+                  width: mood === 'worried' ? 6 : 5,
+                  height: mood === 'worried' ? 6 : 5,
+                  borderRadius: radius.pill,
+                  backgroundColor: lensRim,
+                }}
+              />
+            </>
+          )}
         </View>
-        <View
-          style={{
-            width: 9,
-            height: 4,
-            borderWidth: 1.3,
-            borderTopWidth: 0,
-            borderColor: lensRim,
-            borderBottomLeftRadius: 4,
-            borderBottomRightRadius: 4,
-          }}
-        />
+        {mood === 'sad' ? (
+          <View
+            style={{
+              width: 9,
+              height: 4,
+              borderWidth: 1.3,
+              borderBottomWidth: 0,
+              borderColor: lensRim,
+              borderTopLeftRadius: 4,
+              borderTopRightRadius: 4,
+            }}
+          />
+        ) : mood === 'worried' ? (
+          <View style={{ width: 6, height: 6, borderRadius: 3, borderWidth: 1.3, borderColor: lensRim }} />
+        ) : (
+          <View
+            style={{
+              width: 9,
+              height: 4,
+              borderWidth: 1.3,
+              borderTopWidth: 0,
+              borderColor: lensRim,
+              borderBottomLeftRadius: 4,
+              borderBottomRightRadius: 4,
+            }}
+          />
+        )}
       </View>
 
       {/* Neck */}
@@ -1431,7 +1516,7 @@ function LauncherConsole({
           style={{
             width: 15,
             height: 9,
-            backgroundColor: accent,
+            backgroundColor: trim(0),
             opacity: 0.9,
             borderRadius: radius.sm / 2,
             transform: [{ rotate: '32deg' }],
@@ -1459,7 +1544,7 @@ function LauncherConsole({
           style={{
             width: 15,
             height: 9,
-            backgroundColor: accent,
+            backgroundColor: trim(1),
             opacity: 0.9,
             borderRadius: radius.sm / 2,
             transform: [{ rotate: '-32deg' }],
@@ -1471,8 +1556,8 @@ function LauncherConsole({
       {/* Legs, angled outward, and a soft ground shadow underneath them —
           the base the whole thing visibly stands on. */}
       <View style={{ flexDirection: 'row', gap: 20, marginTop: 3 }}>
-        <View style={{ width: 4, height: 14, borderRadius: 2, backgroundColor: accent, transform: [{ rotate: '-10deg' }] }} />
-        <View style={{ width: 4, height: 14, borderRadius: 2, backgroundColor: accent, transform: [{ rotate: '10deg' }] }} />
+        <View style={{ width: 4, height: 14, borderRadius: 2, backgroundColor: trim(4), transform: [{ rotate: '-10deg' }] }} />
+        <View style={{ width: 4, height: 14, borderRadius: 2, backgroundColor: trim(0), transform: [{ rotate: '10deg' }] }} />
       </View>
       <View style={{ width: 46, height: 6, borderRadius: radius.pill, backgroundColor: accent, opacity: 0.22, marginTop: 3 }} />
     </View>

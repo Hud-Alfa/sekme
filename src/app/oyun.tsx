@@ -9,7 +9,7 @@ import { formatNumber } from '@/lib/format';
 import { haptic } from '@/lib/haptics';
 import { useGame } from '@/store/game';
 import { useSettings } from '@/store/settings';
-import { Button, IconButton, Screen, Sheet, space, Text, useScreen } from '@/ui';
+import { Button, Confetti, IconButton, NumberRoll, Screen, Sheet, StatTile, space, Text, useColors, useScreen } from '@/ui';
 
 /**
  * The board itself. It owns no rules and no physics — GameBoard runs the
@@ -19,6 +19,7 @@ import { Button, IconButton, Screen, Sheet, space, Text, useScreen } from '@/ui'
  */
 export default function PlayScreen() {
   const router = useRouter();
+  const colors = useColors();
   const onboardingDone = useSettings((s) => s.onboardingDone);
 
   const game = useGame((s) => s.game);
@@ -64,6 +65,8 @@ export default function PlayScreen() {
   // is capped by the column count and by the measured frame height.
   const boardWidth = Math.min(content, (frameHeight / ROWS) * COLUMNS);
 
+  const isNewRecord = game.turn >= progress.highScores[game.difficulty];
+
   // Back, the stats and restart used to sit in their own row above the
   // board, leaving the panel's own top edge empty. They ride inside the
   // panel's frame now instead — GameBoard renders this at the frame's own
@@ -106,6 +109,7 @@ export default function PlayScreen() {
           frameHeight={frameHeight}
           header={header}
           locked={resolving || game.over}
+          over={game.over}
           onProgress={(p) => setLiveBonus({ balls: p.ballsCollected, gold: p.goldCollected })}
           onTurnComplete={async (result) => {
             setResolving(true);
@@ -115,32 +119,55 @@ export default function PlayScreen() {
         />
       </View>
 
-      <Sheet visible={showOver} onClose={() => setShowOver(false)} title={tr.game.over}>
-        <View style={{ gap: space.lg }}>
-          <Text variant="body" color="textMuted">
-            {tr.game.overBody}
-          </Text>
+      <Sheet visible={showOver} onClose={() => setShowOver(false)}>
+        <View style={{ gap: space.xl, alignItems: 'center' }}>
+          {/* A record is the one moment this screen celebrates — everything
+              else here is a plain result, on purpose, so this stays worth
+              noticing per `tasarim-sistemi`'s "don't inflate celebration". */}
+          {isNewRecord ? <Confetti play /> : null}
 
-          {game.turn >= progress.highScores[game.difficulty] ? (
+          <View style={{ alignItems: 'center', gap: space.xs }}>
+            <Text variant="body" color="textMuted">
+              {tr.game.over}
+            </Text>
+            <NumberRoll value={game.turn} variant="display" style={{ color: colors.text }} />
+            <Text variant="caption" color="textMuted">
+              {tr.game.score}
+            </Text>
+          </View>
+
+          {isNewRecord ? (
             <Text variant="heading" color="accent">
               {tr.game.newRecord}
             </Text>
           ) : null}
 
-          <Text variant="title">
-            {tr.game.score}: {formatNumber(game.turn)}
-          </Text>
-          <Text variant="body" color="textMuted">
-            {tr.game.goldEarned}: {formatNumber(game.gold)}
-          </Text>
+          <View style={{ flexDirection: 'row', gap: space.md, width: '100%' }}>
+            <StatTile
+              value={formatNumber(progress.highScores[game.difficulty])}
+              label={tr.game.best}
+              tone={isNewRecord ? 'accent' : 'text'}
+            />
+            <StatTile value={formatNumber(game.gold)} label={tr.game.goldEarned} tone="warning" />
+          </View>
 
-          <Button
-            label={tr.game.again}
-            onPress={() => {
-              setShowOver(false);
-              router.replace('/');
-            }}
-          />
+          <View style={{ width: '100%', gap: space.sm }}>
+            <Button
+              label={tr.game.again}
+              onPress={async () => {
+                setShowOver(false);
+                await newGame(game.difficulty);
+              }}
+            />
+            <Button
+              label={tr.game.backToMenu}
+              variant="ghost"
+              onPress={() => {
+                setShowOver(false);
+                router.replace('/');
+              }}
+            />
+          </View>
         </View>
       </Sheet>
 

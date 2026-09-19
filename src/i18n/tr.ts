@@ -25,6 +25,7 @@ export const tr = {
     newRecord: 'Yeni rekor!',
     goldEarned: 'Bu turda kazandığın altın',
     again: 'Tekrar oyna',
+    backToMenu: 'Ana menü',
 
     restart: 'Oyunu sıfırla',
     restartConfirmTitle: 'Bu oyun sıfırlansın mı?',
