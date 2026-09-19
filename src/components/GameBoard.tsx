@@ -986,10 +986,12 @@ export function GameBoard({
         </View>
       </GestureDetector>
 
-      {/* Whatever is left below the launcher after a column-width-bound grid
-          fills a taller-than-wide frame — a real design now, not a gap.
-          Grounded at the bottom, not centred: a turret sits on something. */}
-      <View style={{ flex: 1, width, alignItems: 'center', justifyContent: 'flex-end', paddingBottom: space.lg }}>
+      {/* Right under the launcher marker, not pinned to the panel's bottom —
+          a ball should read as coming FROM this robot, which only works if
+          it sits close enough to where the ball actually appears. A little
+          top padding, not none: touching would look like one glued-together
+          sticker instead of the ring sitting just above the robot's head. */}
+      <View style={{ flex: 1, width, alignItems: 'center', justifyContent: 'flex-start', paddingTop: space.xs }}>
         <LauncherConsole accent={boardAccent} ballColor={ball.color} outline={outline} scheme={scheme} />
       </View>
       </View>
