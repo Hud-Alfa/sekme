@@ -740,13 +740,13 @@ export function GameBoard({
           panel's own top edge, not a separate row above it. */}
       {header ? <View style={{ paddingHorizontal: space.md, paddingTop: space.sm }}>{header}</View> : null}
 
-      {/* Top-anchored, not centred — blocks start right under the header,
-          using the space that used to sit empty above the grid. Whatever
-          slack is left over (the grid is column-width-bound, so there
-          usually is some) collects below the launcher instead, inside the
-          frame's own themed background rather than as a gap above the
-          blocks. */}
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'flex-start' }}>
+      {/* The grid+launcher+robot as ONE centred group, not the grid pinned
+          to the top with the robot trailing below it — the grid is
+          column-width-bound, so there is always some leftover height no
+          matter what; centring the whole group splits that leftover space
+          evenly above and below instead of stranding it entirely on one
+          side. */}
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
       <GestureDetector gesture={gesture}>
         <View style={{ width, height: height + LAUNCHER_STRIP }}>
           {/* A faint outline per cell, occupied or not — an empty row used to
@@ -802,10 +802,11 @@ export function GameBoard({
             if (liveKind === 1) {
               const maxHp = original.kind === 'block' ? original.maxHp : 1;
               const shape = original.kind === 'block' ? (original.shape ?? 'square') : 'square';
+              const hp = liveCells.hp[index] ?? 1;
               return (
                 <BlockCell
                   key={key}
-                  hp={liveCells.hp[index] ?? 1}
+                  hp={hp}
                   maxHp={maxHp}
                   shape={shape}
                   left={left}
@@ -844,6 +845,36 @@ export function GameBoard({
                   {isBall ? `+${original.amount ?? 1}` : `₺${original.amount ?? 1}`}
                 </Text>
               </View>
+            );
+          }),
+        )}
+
+        {/* A triangle's hp number, drawn as its own pass instead of inside
+            BlockCell next to the triangle shape — see the long comment in
+            BlockCell for why that combination made the text invisible. */}
+        {board.map((row, r) =>
+          row.map((original, c) => {
+            const index = r * COLUMNS + c;
+            if ((liveCells.kinds[index] ?? 0) !== 1) return null;
+            const shape = original.kind === 'block' ? (original.shape ?? 'square') : 'square';
+            if (shape === 'square') return null;
+
+            const centroid = triangleCentroid(shape, cell);
+            return (
+              <Text
+                key={`num-${r}-${c}`}
+                variant="label"
+                numeric
+                style={{
+                  position: 'absolute',
+                  left: c * cell + centroid.x - 9,
+                  top: r * cell + centroid.y - 9,
+                  width: 18,
+                  textAlign: 'center',
+                  color: colors.onAccent,
+                }}>
+                {liveCells.hp[index] ?? 1}
+              </Text>
             );
           }),
         )}
@@ -990,8 +1021,11 @@ export function GameBoard({
           a ball should read as coming FROM this robot, which only works if
           it sits close enough to where the ball actually appears. A little
           top padding, not none: touching would look like one glued-together
-          sticker instead of the ring sitting just above the robot's head. */}
-      <View style={{ flex: 1, width, alignItems: 'center', justifyContent: 'flex-start', paddingTop: space.xs }}>
+          sticker instead of the ring sitting just above the robot's head.
+          No `flex: 1` here any more — this sits at its own natural size so
+          the OUTER wrapper above is the one deciding where the leftover
+          space goes (centred, around the whole group), not this one. */}
+      <View style={{ width, alignItems: 'center', paddingTop: space.xs }}>
         <LauncherConsole accent={boardAccent} ballColor={ball.color} outline={outline} scheme={scheme} />
       </View>
       </View>
@@ -1085,26 +1119,18 @@ function BlockCell({
         // A triangle is always drawn filled (the border trick that makes it
         // a triangle at all has no clean "outline only" version) — even on a
         // neon theme, just at the same faded-with-damage opacity as squares.
+        //
+        // The hp NUMBER is deliberately not drawn in here. It used to be an
+        // absolutely-positioned Text right next to the border-trick View
+        // below — and on this renderer, that combination made the text
+        // never paint at all, at any colour, at any zIndex/elevation
+        // (confirmed live: a bright lime background + huge red digits
+        // still didn't show with the triangle View present as a sibling;
+        // removing that sibling made the exact same Text appear instantly).
+        // The number is drawn by `TriangleNumber` instead, as a completely
+        // separate element at the grid level — see the render loop below.
         <Animated.View style={[{ width: size, height: size }, animatedStyle, { opacity: 0.4 + intensity * 0.6 }]}>
           <View pointerEvents="none" style={triangleBorderStyle(shape, size, color)} />
-          {/* Always onAccent, never `color` — unlike a square, a triangle is
-              filled solid on every theme (see above), so text drawn in the
-              same `color` as that fill was invisible on any neon theme. A
-              square only uses `color` for its text because ITS fill is
-              transparent there; a triangle's never is. */}
-          <Text
-            variant="label"
-            numeric
-            style={{
-              position: 'absolute',
-              left: triangleCentroid(shape, size).x - 9,
-              top: triangleCentroid(shape, size).y - 9,
-              width: 18,
-              textAlign: 'center',
-              color: onAccent,
-            }}>
-            {hp}
-          </Text>
         </Animated.View>
       )}
     </Animated.View>
@@ -1368,19 +1394,38 @@ function LauncherConsole({
         <View style={{ width: 4, height: 4, borderRadius: 2, backgroundColor: accent }} />
       </View>
 
-      {/* Head — a small lensed unit, the equipped ball's own colour behind
-          the lens so the console reads as "yours", same personalisation the
-          launcher badge above it already carries. */}
-      <View style={[{ width: 30, height: 22, borderRadius: radius.sm, alignItems: 'center', justifyContent: 'center' }, panel, glow]}>
-        <View style={{ width: 12, height: 12, borderRadius: radius.pill, backgroundColor: ballColor, borderWidth: 1.5, borderColor: lensRim }} />
+      {/* Head — an actual face now, not just a lens: two eyes and a small
+          smile, drawn with the same border tricks as the smile-shaped
+          bottom-rounded mouth below. The eyes flip with the scheme like the
+          lens rim used to, for the same reason — a fixed colour vanishes
+          against one of the two backgrounds otherwise. */}
+      <View style={[{ width: 34, height: 26, borderRadius: radius.sm, alignItems: 'center', justifyContent: 'center', gap: 3 }, panel, glow]}>
+        <View style={{ flexDirection: 'row', gap: 7 }}>
+          <View style={{ width: 5, height: 5, borderRadius: radius.pill, backgroundColor: lensRim }} />
+          <View style={{ width: 5, height: 5, borderRadius: radius.pill, backgroundColor: lensRim }} />
+        </View>
+        <View
+          style={{
+            width: 9,
+            height: 4,
+            borderWidth: 1.3,
+            borderTopWidth: 0,
+            borderColor: lensRim,
+            borderBottomLeftRadius: 4,
+            borderBottomRightRadius: 4,
+          }}
+        />
       </View>
 
       {/* Neck */}
       <View style={{ width: 10, height: 5, backgroundColor: accent, opacity: 0.7 }} />
 
-      {/* Body — a boxier panel than the head, with a thin visor stripe, and
-          two angled shoulder panels breaking the silhouette out sideways
-          the way the reference's side panels do. */}
+      {/* Body — a boxier panel than the head, with a small circular badge
+          carrying the EQUIPPED BALL's own colour (moved down here now that
+          the head is a proper face — the personalisation still belongs
+          somewhere, just not on top of two eyes), and two angled shoulder
+          panels breaking the silhouette out sideways the way the
+          reference's side panels do. */}
       <View style={{ flexDirection: 'row', alignItems: 'center' }}>
         <View
           style={{
@@ -1399,7 +1444,16 @@ function LauncherConsole({
             panel,
             glow,
           ]}>
-          <View style={{ width: '65%', height: 2, borderRadius: 1, backgroundColor: accent, opacity: 0.55 }} />
+          <View
+            style={{
+              width: 14,
+              height: 14,
+              borderRadius: radius.pill,
+              backgroundColor: ballColor,
+              borderWidth: 1.5,
+              borderColor: lensRim,
+            }}
+          />
         </View>
         <View
           style={{
