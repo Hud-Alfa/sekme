@@ -644,6 +644,19 @@ export function GameBoard({
     aim.value = clampAim({ x: (x - launchX * width) * AIM_HORIZONTAL_BOOST, y: y - height });
   };
 
+  // Dragging back to within this many pixels of the launch point and
+  // releasing there cancels the shot instead of firing it — there was
+  // previously no way to back out of an aim once a finger touched down.
+  // Scaled with the cell so it feels the same size on a phone and a tablet.
+  const cancelRadius = Math.max(28, cell * 0.4);
+
+  const dragDistance = (x: number, y: number) => {
+    'worklet';
+    const dx = x - launchX * width;
+    const dy = y - height;
+    return Math.sqrt(dx * dx + dy * dy);
+  };
+
   const gesture = Gesture.Pan()
     .onBegin((event) => {
       'worklet';
@@ -655,11 +668,16 @@ export function GameBoard({
       'worklet';
       if (flying.value === 1 || turnLocked.value === 1 || locked) return;
       aimAt(event.x, event.y);
+      // Dims the line while inside the cancel zone — releasing now reads as
+      // "this shot won't fire" before it happens, not a surprise after.
+      aiming.value = dragDistance(event.x, event.y) < cancelRadius ? 0.3 : 1;
     })
-    .onEnd(() => {
+    .onEnd((event) => {
       'worklet';
       if (flying.value === 1 || turnLocked.value === 1 || locked) return;
       aiming.value = timing(0, duration.fast);
+
+      if (dragDistance(event.x, event.y) < cancelRadius) return;
 
       flight.value = { ...emptyFlight(), queued: Math.min(ballCount, BALL_POOL) };
       tally.value = { scored: 0, balls: 0, gold: 0 };
@@ -682,6 +700,11 @@ export function GameBoard({
   }));
 
   const collectStyle = useAnimatedStyle(() => ({ transform: [{ scale: collectPulse.value }] }));
+
+  // Visible boundary for the cancel zone above — shown for as long as the
+  // aim line is, so the "drag back to cancel" gesture is something a player
+  // can see and learn, not a hidden trick they stumble into.
+  const cancelRingStyle = useAnimatedStyle(() => ({ opacity: aiming.value > 0 ? 0.35 : 0 }));
 
   const dots = useMemo(() => Array.from({ length: BALL_POOL }, (_, i) => i), []);
 
@@ -888,6 +911,27 @@ export function GameBoard({
           </Animated.View>
         </View>
 
+        {/* The cancel zone itself — a dashed ring around the launch point.
+            Dragging back inside it and letting go cancels the shot; the
+            aim line dims to confirm once you're actually inside it. */}
+        <Animated.View
+          pointerEvents="none"
+          style={[
+            {
+              position: 'absolute',
+              left: launchX * width - cancelRadius,
+              top: height - cancelRadius,
+              width: cancelRadius * 2,
+              height: cancelRadius * 2,
+              borderRadius: cancelRadius,
+              borderWidth: 1.5,
+              borderStyle: 'dashed',
+              borderColor: boardAccent,
+            },
+            cancelRingStyle,
+          ]}
+        />
+
         <Animated.View pointerEvents="none" style={[{ position: 'absolute' }, aimLine]}>
           {/* A plain bar only showed heading, not destination — the arrowhead
               is what actually answers "where is this going". */}
@@ -1041,6 +1085,11 @@ function BlockCell({
         // neon theme, just at the same faded-with-damage opacity as squares.
         <Animated.View style={[{ width: size, height: size }, animatedStyle, { opacity: 0.4 + intensity * 0.6 }]}>
           <View pointerEvents="none" style={triangleBorderStyle(shape, size, color)} />
+          {/* Always onAccent, never `color` — unlike a square, a triangle is
+              filled solid on every theme (see above), so text drawn in the
+              same `color` as that fill was invisible on any neon theme. A
+              square only uses `color` for its text because ITS fill is
+              transparent there; a triangle's never is. */}
           <Text
             variant="label"
             numeric
@@ -1050,7 +1099,7 @@ function BlockCell({
               top: triangleCentroid(shape, size).y - 9,
               width: 18,
               textAlign: 'center',
-              color: outline ? color : onAccent,
+              color: onAccent,
             }}>
             {hp}
           </Text>
@@ -1277,12 +1326,13 @@ function Shard({
 }
 
 /**
- * The launcher's own silhouette — a rounded body on a finned base, drawn
- * from the same primitives as everything else in this file (borders,
- * rounded corners, the triangle trick from `BlockCell`) rather than an
- * image, so it scales cleanly and never looks out of place next to the
- * blocks. Sits at the bottom of whatever space is left under the launcher —
- * the one piece of this screen that was previously just empty frame.
+ * The launcher's own silhouette — closer to the referans reference's small
+ * robot/cannon than a generic rounded body: antenna, a lensed head, a boxy
+ * body with angled shoulder panels, and legs, all built from the same
+ * borders/rectangles/rotations as everything else in this file rather than
+ * an image, so it scales cleanly, themes for free, and never looks out of
+ * place next to the blocks. Sits at the bottom of whatever space is left
+ * under the launcher.
  */
 function LauncherConsole({
   accent,
@@ -1295,79 +1345,80 @@ function LauncherConsole({
   outline: boolean;
   scheme: 'light' | 'dark';
 }) {
-  const bodyWidth = 76;
-  const bodyHeight = 84;
-  const portSize = 26;
   // The rim, like the ball's own rim in `Dot`, has to flip with the scheme
   // or it vanishes against a light background — same fix, same reason.
-  const portBorder = outline ? accent : scheme === 'light' ? 'rgba(11,11,15,0.28)' : 'rgba(255,255,255,0.55)';
+  const lensRim = outline ? accent : scheme === 'light' ? 'rgba(11,11,15,0.28)' : 'rgba(255,255,255,0.55)';
+  const panel = outline
+    ? { backgroundColor: 'transparent', borderWidth: 2, borderColor: accent }
+    : { backgroundColor: `${accent}1F`, borderWidth: 2, borderColor: accent };
+  const glow = outline ? { boxShadow: `0 0 10px ${accent}66` } : null;
 
   return (
     <View style={{ alignItems: 'center' }}>
-      {/* The body — filled on Klasik, outlined (and glowing, via the parent
-          frame's own shadow) on a neon theme, exactly like a block. */}
-      <View
-        style={[
-          {
-            width: bodyWidth,
-            height: bodyHeight,
-            borderTopLeftRadius: bodyWidth / 2,
-            borderTopRightRadius: bodyWidth / 2,
-            borderBottomLeftRadius: radius.md,
-            borderBottomRightRadius: radius.md,
-            borderWidth: 2,
-            borderColor: accent,
-            alignItems: 'center',
-            justifyContent: 'center',
-          },
-          outline ? { backgroundColor: 'transparent' } : { backgroundColor: `${accent}1F` },
-        ]}>
-        {/* The one part of this console that is not purely thematic — the
-            viewport carries the EQUIPPED BALL's own colour, so the console
-            reads as "yours", the way the launcher badge above it already
-            does with its own little coloured dot. */}
+      {/* Antenna — two angled struts with a spark at each tip, the detail
+          that reads as "a small machine" rather than a plain box. */}
+      <View style={{ flexDirection: 'row', gap: 16 }}>
+        <View style={{ width: 2, height: 11, backgroundColor: accent, opacity: 0.9, transform: [{ rotate: '-16deg' }] }} />
+        <View style={{ width: 2, height: 11, backgroundColor: accent, opacity: 0.9, transform: [{ rotate: '16deg' }] }} />
+      </View>
+      <View style={{ flexDirection: 'row', gap: 10, marginTop: -2, marginBottom: 3 }}>
+        <View style={{ width: 4, height: 4, borderRadius: 2, backgroundColor: accent }} />
+        <View style={{ width: 4, height: 4, borderRadius: 2, backgroundColor: accent }} />
+      </View>
+
+      {/* Head — a small lensed unit, the equipped ball's own colour behind
+          the lens so the console reads as "yours", same personalisation the
+          launcher badge above it already carries. */}
+      <View style={[{ width: 30, height: 22, borderRadius: radius.sm, alignItems: 'center', justifyContent: 'center' }, panel, glow]}>
+        <View style={{ width: 12, height: 12, borderRadius: radius.pill, backgroundColor: ballColor, borderWidth: 1.5, borderColor: lensRim }} />
+      </View>
+
+      {/* Neck */}
+      <View style={{ width: 10, height: 5, backgroundColor: accent, opacity: 0.7 }} />
+
+      {/* Body — a boxier panel than the head, with a thin visor stripe, and
+          two angled shoulder panels breaking the silhouette out sideways
+          the way the reference's side panels do. */}
+      <View style={{ flexDirection: 'row', alignItems: 'center' }}>
         <View
           style={{
-            width: portSize,
-            height: portSize,
-            borderRadius: radius.pill,
-            backgroundColor: ballColor,
-            borderWidth: 2,
-            borderColor: portBorder,
+            width: 15,
+            height: 9,
+            backgroundColor: accent,
+            opacity: 0.9,
+            borderRadius: radius.sm / 2,
+            transform: [{ rotate: '32deg' }],
+            marginRight: -5,
+          }}
+        />
+        <View
+          style={[
+            { width: 56, height: 36, borderRadius: radius.sm, alignItems: 'center', justifyContent: 'center' },
+            panel,
+            glow,
+          ]}>
+          <View style={{ width: '65%', height: 2, borderRadius: 1, backgroundColor: accent, opacity: 0.55 }} />
+        </View>
+        <View
+          style={{
+            width: 15,
+            height: 9,
+            backgroundColor: accent,
+            opacity: 0.9,
+            borderRadius: radius.sm / 2,
+            transform: [{ rotate: '-32deg' }],
+            marginLeft: -5,
           }}
         />
       </View>
 
-      {/* A base plate with two angled fins — the silhouette detail that
-          actually reads as "a launcher" instead of a rounded box standing
-          on its own. */}
-      <View style={{ flexDirection: 'row', alignItems: 'flex-end' }}>
-        <View
-          style={{
-            width: 0,
-            height: 0,
-            borderLeftWidth: 12,
-            borderBottomWidth: 20,
-            borderLeftColor: 'transparent',
-            borderBottomColor: accent,
-            opacity: 0.85,
-            marginRight: -4,
-          }}
-        />
-        <View style={{ width: bodyWidth * 0.7, height: 12, borderRadius: radius.sm, backgroundColor: accent }} />
-        <View
-          style={{
-            width: 0,
-            height: 0,
-            borderRightWidth: 12,
-            borderBottomWidth: 20,
-            borderRightColor: 'transparent',
-            borderBottomColor: accent,
-            opacity: 0.85,
-            marginLeft: -4,
-          }}
-        />
+      {/* Legs, angled outward, and a soft ground shadow underneath them —
+          the base the whole thing visibly stands on. */}
+      <View style={{ flexDirection: 'row', gap: 20, marginTop: 3 }}>
+        <View style={{ width: 4, height: 14, borderRadius: 2, backgroundColor: accent, transform: [{ rotate: '-10deg' }] }} />
+        <View style={{ width: 4, height: 14, borderRadius: 2, backgroundColor: accent, transform: [{ rotate: '10deg' }] }} />
       </View>
+      <View style={{ width: 46, height: 6, borderRadius: radius.pill, backgroundColor: accent, opacity: 0.22, marginTop: 3 }} />
     </View>
   );
 }
