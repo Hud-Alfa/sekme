@@ -30,6 +30,11 @@ export default function PlayScreen() {
   const [showOver, setShowOver] = useState(false);
   const [showRestart, setShowRestart] = useState(false);
   const [resolving, setResolving] = useState(false);
+  // The real available height for the board's own frame — measured via
+  // onLayout rather than guessed, so the frame (and the width it derives)
+  // matches this exact device instead of a rough multiplier. Seeded with a
+  // reasonable guess so nothing flashes at 0 before the first layout pass.
+  const [frameHeight, setFrameHeight] = useState(screenHeight * 0.75);
 
   // Balls/gold collected so far in the shot currently in flight. GameBoard
   // reports a running total for the turn, not a delta, so this is simply set
@@ -56,9 +61,8 @@ export default function PlayScreen() {
 
   // The board has to fit whatever is left after the header, on the shortest
   // phone as well as the tallest. Nothing here is a fixed number: the width
-  // is capped by the column and by the height budget.
-  const heightBudget = screenHeight * 0.82;
-  const boardWidth = Math.min(content, (heightBudget / ROWS) * COLUMNS);
+  // is capped by the column count and by the measured frame height.
+  const boardWidth = Math.min(content, (frameHeight / ROWS) * COLUMNS);
 
   return (
     <Screen>
@@ -83,11 +87,12 @@ export default function PlayScreen() {
         </View>
 
         {/* The board is column-width-bound, not height-bound — on a 7-wide
-            board there is always slack left over on a tall phone. Anchoring
-            it to the bottom instead of centering puts that slack under the
-            header (breathing room) rather than splitting it above and below,
-            and keeps the launcher where a thumb naturally rests. */}
-        <View style={{ flex: 1, alignItems: 'center', justifyContent: 'flex-end' }}>
+            board there is always slack left over on a tall phone. Rather than
+            push that slack to one edge, GameBoard now draws its own frame the
+            full measured height and fills it — bordered, on-theme, with a
+            faint grid under the empty rows — so what used to be bare black
+            reads as the arena's own design instead of leftover space. */}
+        <View style={{ flex: 1, alignItems: 'center' }} onLayout={(e) => setFrameHeight(e.nativeEvent.layout.height)}>
           <GameBoard
             board={game.board}
             ballCount={game.balls + liveBonus.balls}
@@ -95,6 +100,7 @@ export default function PlayScreen() {
             ballId={progress.selected}
             boardThemeId={progress.boardTheme}
             width={boardWidth}
+            frameHeight={frameHeight}
             locked={resolving || game.over}
             onProgress={(p) => setLiveBonus({ balls: p.ballsCollected, gold: p.goldCollected })}
             onTurnComplete={async (result) => {

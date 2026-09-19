@@ -96,6 +96,11 @@ type GameBoardProps = {
   /** Which board skin is active — see `game/themes.ts`. Defaults to the free one. */
   boardThemeId?: string;
   width: number;
+  /** Real available height for the board's own frame, measured by the caller
+   * via onLayout. The grid itself stays width-bound (unchanged), but the
+   * frame around it fills this height instead of stopping short — see the
+   * comment above the frame View below. */
+  frameHeight?: number;
   onTurnComplete: (result: TurnResult) => void;
   /** Fires on any frame that actually changed something — a hit or a pickup —
       so the screen can show the running total climbing mid-turn instead of
@@ -111,6 +116,7 @@ export function GameBoard({
   ballId,
   boardThemeId,
   width,
+  frameHeight,
   onTurnComplete,
   onProgress,
   locked,
@@ -565,9 +571,54 @@ export function GameBoard({
   const markerWidth = 56;
   const markerX = Math.min(Math.max(launchX * width - markerWidth / 2, 0), width - markerWidth);
 
+  // The grid is column-width-bound — on a 7-wide board there is always slack
+  // left over on a tall phone. Rather than leave that slack as bare
+  // background, the FRAME around the grid fills the caller's whole measured
+  // height (bordered, on-theme, glowing for a neon theme) and the grid sits
+  // centred inside it — the frame's own border/tint is what fills the space,
+  // not the grid stretching to a size its physics were never tuned for.
+  const framed = Math.max(frameHeight ?? 0, height + LAUNCHER_STRIP);
+  const outline = theme.style === 'outline';
+
   return (
-    <GestureDetector gesture={gesture}>
-      <View style={{ width, height: height + LAUNCHER_STRIP, alignSelf: 'center' }}>
+    <View
+      style={{
+        width,
+        height: framed,
+        alignSelf: 'center',
+        alignItems: 'center',
+        justifyContent: 'center',
+        borderRadius: radius.xl,
+        borderWidth: 2,
+        borderColor: outline ? `${boardAccent}AA` : colors.border,
+        backgroundColor: outline ? `${boardAccent}0F` : colors.surfaceAlt,
+        overflow: 'hidden',
+        boxShadow: theme.glow ? `0 0 ${Math.round(width * 0.025)}px ${boardAccent}55` : undefined,
+      }}>
+      <GestureDetector gesture={gesture}>
+        <View style={{ width, height: height + LAUNCHER_STRIP }}>
+          {/* A faint outline per cell, occupied or not — an empty row used to
+              read as bare black; now the whole 9-row grid reads as one
+              structured field regardless of how much of it is filled yet. */}
+          {Array.from({ length: ROWS }, (_, r) =>
+            Array.from({ length: COLUMNS }, (_, c) => (
+              <View
+                key={`grid-${r}-${c}`}
+                pointerEvents="none"
+                style={{
+                  position: 'absolute',
+                  left: c * cell,
+                  top: r * cell,
+                  width: cell,
+                  height: cell,
+                  borderWidth: 1,
+                  borderRadius: radius.sm,
+                  borderColor: outline ? `${boardAccent}22` : `${colors.border}80`,
+                }}
+              />
+            )),
+          )}
+
         {board.map((row, r) =>
           row.map((original, c) => {
             const index = r * COLUMNS + c;
@@ -652,7 +703,7 @@ export function GameBoard({
               borderRadius: radius.pill,
               borderWidth: 2,
               borderColor: boardAccent,
-              backgroundColor: colors.bg,
+              backgroundColor: outline ? `${boardAccent}0F` : colors.surfaceAlt,
             }}
           />
         </View>
@@ -701,11 +752,12 @@ export function GameBoard({
           />
         </Animated.View>
 
-        {dots.map((i) => (
-          <Dot key={i} index={i} flight={flight} size={ballRadius * 2} ball={ball} scheme={scheme} glow={theme.glow} />
-        ))}
-      </View>
-    </GestureDetector>
+          {dots.map((i) => (
+            <Dot key={i} index={i} flight={flight} size={ballRadius * 2} ball={ball} scheme={scheme} glow={theme.glow} />
+          ))}
+        </View>
+      </GestureDetector>
+    </View>
   );
 }
 
