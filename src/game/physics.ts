@@ -102,6 +102,74 @@ export function hitAxis(centre: Vec, radius: number, box: Rect): Axis {
   return Math.abs(dx) > Math.abs(dy) ? 'x' : 'y';
 }
 
+/**
+ * The four ways a right-triangle block can sit in a cell — named for which
+ * corner is solid ground; the other three corners are open. The triangle's
+ * two legs run along the cell's own edges (indistinguishable from a square
+ * block there, so nothing extra is needed); the only new surface is the
+ * diagonal hypotenuse, which is what `hitTriangle` checks.
+ */
+export type TriangleCorner = 1 | 2 | 3 | 4; // top-left, top-right, bottom-left, bottom-right
+
+export type TriangleHit = { normal: Vec; distance: number };
+
+/**
+ * Circle-vs-diagonal collision. `distance` is the signed perpendicular
+ * distance from the circle's centre to the hypotenuse LINE (not the
+ * segment) — negative means the centre has already crossed into the solid
+ * corner, which sub-stepping should prevent but which is still handled the
+ * same way as a shallow touch: bounce it back out.
+ *
+ * The four normals were derived once, by hand, from which half-plane of each
+ * diagonal is solid — `npm test` pins them so a future edit here cannot
+ * silently flip a triangle's bounce direction.
+ */
+export function hitTriangle(
+  centre: Vec,
+  radius: number,
+  box: Rect,
+  corner: TriangleCorner,
+): TriangleHit | null {
+  'worklet';
+  const dx = centre.x - box.x;
+  const dy = centre.y - box.y;
+  const s = box.width; // cells are always square — width === height
+
+  let raw: number;
+  let normal: Vec;
+  if (corner === 1) {
+    // top-left solid (legs on the top and left edges); hypotenuse runs
+    // top-right to bottom-left.
+    raw = dx + dy - s;
+    normal = { x: Math.SQRT1_2, y: Math.SQRT1_2 };
+  } else if (corner === 4) {
+    // bottom-right solid; same diagonal as top-left, opposite side.
+    raw = s - dx - dy;
+    normal = { x: -Math.SQRT1_2, y: -Math.SQRT1_2 };
+  } else if (corner === 2) {
+    // top-right solid (legs on the top and right edges); hypotenuse runs
+    // top-left to bottom-right.
+    raw = dy - dx;
+    normal = { x: -Math.SQRT1_2, y: Math.SQRT1_2 };
+  } else {
+    // bottom-left solid; same diagonal as top-right, opposite side.
+    raw = dx - dy;
+    normal = { x: Math.SQRT1_2, y: -Math.SQRT1_2 };
+  }
+
+  const distance = raw * Math.SQRT1_2;
+  if (distance > radius) return null;
+  return { normal, distance };
+}
+
+/** Reflects a velocity off an arbitrary unit normal — the general mirror
+ * formula, for the diagonal surfaces `reflect` (axis-only) cannot express. */
+export function reflectOff(velocity: Vec, normal: Vec): Vec {
+  'worklet';
+  const dot = velocity.x * normal.x + velocity.y * normal.y;
+  return { x: velocity.x - 2 * dot * normal.x, y: velocity.y - 2 * dot * normal.y };
+}
+
 /** Circle-to-circle overlap, for pickups. */
 export function circlesOverlap(a: Vec, aRadius: number, b: Vec, bRadius: number): boolean {
   'worklet';

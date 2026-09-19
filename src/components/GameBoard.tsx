@@ -11,10 +11,10 @@ import Animated, {
 } from 'react-native-reanimated';
 
 import { findBall, type Ball } from '@/game/balls';
-import { EMPTY, type Board, type Cell } from '@/game/board';
+import { EMPTY, type Board, type BlockShape, type Cell } from '@/game/board';
 import { AIM_HORIZONTAL_BOOST, COLUMNS, ROWS, SPEED_IN_CELLS, STUCK } from '@/game/curve';
 import type { TurnResult } from '@/game/engine';
-import { clampAim, hitAxis, rotate, stepWalls, subSteps } from '@/game/physics';
+import { clampAim, hitAxis, hitTriangle, reflectOff, rotate, stepWalls, subSteps, type TriangleCorner } from '@/game/physics';
 import { findBoardTheme, themeColorFor, type BoardTheme } from '@/game/themes';
 import { formatNumber } from '@/lib/format';
 import { haptic } from '@/lib/haptics';
@@ -76,6 +76,13 @@ type Flight = {
    * which read as the count updating for no visible reason. */
   ballCredit: number[];
   goldCredit: number[];
+  /** Seconds since this ball last touched a block — resets on every block
+   * contact, not on every wall bounce. The force-return escalation reads
+   * this instead of the whole turn's elapsed time, so a ball that is still
+   * actively clearing blocks is never yanked home early just because the
+   * turn overall has run long; only a ball that has gone quiet — bouncing
+   * wall-to-wall with nothing to show for it — is genuinely stuck. */
+  stuckTimer: number[];
 };
 
 function emptyFlight(): Flight {
@@ -90,10 +97,17 @@ function emptyFlight(): Flight {
     releaseTimer: 0,
     ballCredit: new Array<number>(BALL_POOL).fill(0),
     goldCredit: new Array<number>(BALL_POOL).fill(0),
+    stuckTimer: new Array<number>(BALL_POOL).fill(0),
   };
 }
 
-type CellsSnapshot = { kinds: number[]; hp: number[]; amount: number[] };
+// Shape as a number, for the same reason kind is: the frame loop's arrays
+// stay flat numbers, never objects or strings, so a worklet never has to
+// cross the bridge to read one. 0 square, 1 tl, 2 tr, 3 bl, 4 br — matching
+// `game/physics.ts`'s `TriangleCorner` numbering for 1-4.
+const SHAPE_CODE: Record<BlockShape, number> = { square: 0, tl: 1, tr: 2, bl: 3, br: 4 };
+
+type CellsSnapshot = { kinds: number[]; hp: number[]; amount: number[]; shapes: number[] };
 
 export type TurnProgress = { ballsCollected: number; goldCollected: number };
 
@@ -177,6 +191,7 @@ export function GameBoard({
     const kinds: number[] = [];
     const hp: number[] = [];
     const amount: number[] = [];
+    const shapes: number[] = [];
 
     for (let r = 0; r < ROWS; r++) {
       for (let c = 0; c < COLUMNS; c++) {
@@ -186,9 +201,10 @@ export function GameBoard({
         );
         hp.push(item?.kind === 'block' ? item.hp : 0);
         amount.push(item?.kind === 'ball' || item?.kind === 'gold' ? item.amount : 0);
+        shapes.push(item?.kind === 'block' ? SHAPE_CODE[item.shape ?? 'square'] : 0);
       }
     }
-    return { kinds, hp, amount };
+    return { kinds, hp, amount, shapes };
   }, [board]);
 
   const cells = useSharedValue(snapshot);
@@ -275,10 +291,12 @@ export function GameBoard({
   // time this callback was created.
   const amountRef = useRef(snapshot.amount);
   amountRef.current = snapshot.amount;
+  const shapesRef = useRef(snapshot.shapes);
+  shapesRef.current = snapshot.shapes;
 
   const reportProgress = useCallback(
     (kinds: number[], hp: number[], ballsGot: number, goldGot: number) => {
-      setLiveCells({ kinds, hp, amount: amountRef.current });
+      setLiveCells({ kinds, hp, amount: amountRef.current, shapes: shapesRef.current });
       onProgress?.({ ballsCollected: ballsGot, goldCollected: goldGot });
     },
     [onProgress],
@@ -300,7 +318,11 @@ export function GameBoard({
           const original = board[r]?.[c];
           if (kind === 1) {
             const maxHp = original?.kind === 'block' ? original.maxHp : (hp[index] ?? 1);
-            row.push({ kind: 'block', hp: hp[index] ?? 1, maxHp });
+            // Shape is fixed at spawn and never changes mid-turn, same as
+            // maxHp above — carried from the original cell, not tracked in
+            // the frame loop's own flat arrays.
+            const shape = original?.kind === 'block' ? (original.shape ?? 'square') : 'square';
+            row.push({ kind: 'block', hp: hp[index] ?? 1, maxHp, shape });
           } else if (kind === 0) {
             row.push(EMPTY);
           } else {
@@ -359,9 +381,10 @@ export function GameBoard({
 
     // Escalating nudges rather than a hard cut: a genuinely long turn is
     // hurried, not punished. Without this, a ball trapped in a flat corridor
-    // never comes home and the game simply stops.
+    // never comes home and the game simply stops. Jitter and the speed-up are
+    // still turn-wide (a gentle nudge to everyone costs little) — only the
+    // force-return below is judged per ball, since it is the disruptive one.
     if (elapsed.value > STUCK.speedUpAfter) speedScale.value = 2;
-    const forceReturn = elapsed.value > STUCK.forceReturnAfter;
     const jitter = elapsed.value > STUCK.jitterAfter;
 
     const current = g.speed * speedScale.value;
@@ -377,6 +400,7 @@ export function GameBoard({
     const live = [...f.live];
     const ballCredit = [...f.ballCredit];
     const goldCredit = [...f.goldCredit];
+    const stuckTimer = [...f.stuckTimer];
     let queued = f.queued;
     let releaseTimer = f.releaseTimer - dt;
 
@@ -395,6 +419,9 @@ export function GameBoard({
 
     const kinds = [...cells.value.kinds];
     const hp = [...cells.value.hp];
+    // Never mutated — a block's shape is fixed at spawn — so this is read
+    // directly rather than copied like kinds/hp are.
+    const shapes = cells.value.shapes;
     let scored = tally.value.scored;
     let ballsGot = tally.value.balls;
     let goldGot = tally.value.gold;
@@ -405,6 +432,9 @@ export function GameBoard({
 
     for (let i = 0; i < BALL_POOL; i++) {
       if (live[i] !== 1) continue;
+
+      stuckTimer[i] = (stuckTimer[i] ?? 0) + dt;
+      const forceReturn = stuckTimer[i]! > STUCK.forceReturnAfter;
 
       let position = { x: px[i]!, y: py[i]! };
       let velocity = { x: vx[i]!, y: vy[i]! };
@@ -443,12 +473,23 @@ export function GameBoard({
             // physical radius — a block's hitbox never grows, only a
             // pickup's, so magnet balls never gain reach through a wall.
             const reach = kind === 1 ? g.ballRadius : g.ballRadius + g.magnetRadius * g.cell;
-            const axis = hitAxis(position, reach, box);
-            if (axis === null) continue;
+            const shape = kind === 1 ? (shapes[index] ?? 0) : 0;
+
+            // A triangle's two legs sit flush on the cell's own edges — from
+            // outside the cell those behave exactly like a square block's
+            // faces, so only the diagonal hypotenuse needs its own check.
+            // `axis` drives the existing square path; `triangleHit` drives
+            // the new one; exactly one of them is ever set.
+            const axis = shape === 0 ? hitAxis(position, reach, box) : null;
+            const triangleHit = shape === 0 ? null : hitTriangle(position, reach, box, shape as TriangleCorner);
+            if (axis === null && triangleHit === null) continue;
 
             changed = true;
 
             if (kind === 1) {
+              // Contact, not just a break — a ball still chewing through a
+              // tough block should never be force-returned mid-fight.
+              stuckTimer[i] = 0;
               hp[index] = (hp[index] ?? 1) - g.damagePerHit;
               scored += 1;
               if ((hp[index] ?? 0) <= 0) {
@@ -468,33 +509,46 @@ export function GameBoard({
               const pierced = g.pierceChance > 0 && Math.random() < g.pierceChance;
               if (!blockHit && !pierced) {
                 blockHit = true;
-                velocity = {
-                  x: axis === 'x' ? -velocity.x : velocity.x,
-                  y: axis === 'y' ? -velocity.y : velocity.y,
-                };
-                if (jitter) velocity = rotate(velocity, STUCK.jitterRadians);
 
-                // Reflecting velocity alone does not move the ball — with
-                // blocks now touching edge-to-edge, a ball that penetrated
-                // past a boundary in one sub-step would stay embedded and
-                // keep re-triggering the same collision next sub-step,
-                // reflecting back and forth in place instead of leaving.
-                // Push it back to just outside the box it hit.
-                if (axis === 'x') {
-                  position = {
-                    x:
-                      position.x < box.x + box.width / 2
-                        ? box.x - g.ballRadius
-                        : box.x + box.width + g.ballRadius,
-                    y: position.y,
+                if (axis !== null) {
+                  velocity = {
+                    x: axis === 'x' ? -velocity.x : velocity.x,
+                    y: axis === 'y' ? -velocity.y : velocity.y,
                   };
-                } else {
+                  if (jitter) velocity = rotate(velocity, STUCK.jitterRadians);
+
+                  // Reflecting velocity alone does not move the ball — with
+                  // blocks now touching edge-to-edge, a ball that penetrated
+                  // past a boundary in one sub-step would stay embedded and
+                  // keep re-triggering the same collision next sub-step,
+                  // reflecting back and forth in place instead of leaving.
+                  // Push it back to just outside the box it hit.
+                  if (axis === 'x') {
+                    position = {
+                      x:
+                        position.x < box.x + box.width / 2
+                          ? box.x - g.ballRadius
+                          : box.x + box.width + g.ballRadius,
+                      y: position.y,
+                    };
+                  } else {
+                    position = {
+                      x: position.x,
+                      y:
+                        position.y < box.y + box.height / 2
+                          ? box.y - g.ballRadius
+                          : box.y + box.height + g.ballRadius,
+                    };
+                  }
+                } else if (triangleHit !== null) {
+                  velocity = reflectOff(velocity, triangleHit.normal);
+                  if (jitter) velocity = rotate(velocity, STUCK.jitterRadians);
+                  // Same reasoning as the square push-out above, along the
+                  // diagonal's own normal instead of an axis.
+                  const push = g.ballRadius - triangleHit.distance;
                   position = {
-                    x: position.x,
-                    y:
-                      position.y < box.y + box.height / 2
-                        ? box.y - g.ballRadius
-                        : box.y + box.height + g.ballRadius,
+                    x: position.x + triangleHit.normal.x * push,
+                    y: position.y + triangleHit.normal.y * push,
                   };
                 }
               }
@@ -544,8 +598,8 @@ export function GameBoard({
       if (live[i] === 1) moving += 1;
     }
 
-    cells.value = { kinds, hp, amount: cells.value.amount };
-    flight.value = { px, py, vx, vy, live, queued, releaseTimer, ballCredit, goldCredit };
+    cells.value = { kinds, hp, amount: cells.value.amount, shapes: cells.value.shapes };
+    flight.value = { px, py, vx, vy, live, queued, releaseTimer, ballCredit, goldCredit, stuckTimer };
     tally.value = { scored, balls: ballsGot, gold: goldGot };
 
     if (broke) runOnJS(onBreak)(brokeAt);
@@ -692,11 +746,13 @@ export function GameBoard({
 
             if (liveKind === 1) {
               const maxHp = original.kind === 'block' ? original.maxHp : 1;
+              const shape = original.kind === 'block' ? (original.shape ?? 'square') : 'square';
               return (
                 <BlockCell
                   key={key}
                   hp={liveCells.hp[index] ?? 1}
                   maxHp={maxHp}
+                  shape={shape}
                   left={left}
                   top={top}
                   size={cell}
@@ -866,6 +922,7 @@ export function GameBoard({
 function BlockCell({
   hp,
   maxHp,
+  shape,
   left,
   top,
   size,
@@ -876,6 +933,7 @@ function BlockCell({
 }: {
   hp: number;
   maxHp: number;
+  shape: BlockShape;
   left: number;
   top: number;
   size: number;
@@ -913,31 +971,118 @@ function BlockCell({
     <Animated.View
       exiting={ZoomOut.duration(duration.base)}
       style={{ position: 'absolute', left, top, width: size, height: size }}>
-      <Animated.View
-        style={[
-          {
-            flex: 1,
-            borderRadius: radius.sm,
-            alignItems: 'center',
-            justifyContent: 'center',
-            opacity: 0.4 + intensity * 0.6,
-          },
-          outline
-            ? {
-                backgroundColor: 'transparent',
-                borderWidth: 2,
-                borderColor: color,
-                boxShadow: glow ? `0 0 ${Math.round(size * 0.22)}px ${color}` : undefined,
-              }
-            : { backgroundColor: color },
-          animatedStyle,
-        ]}>
-        <Text variant="label" style={{ color: outline ? color : onAccent }}>
-          {hp}
-        </Text>
-      </Animated.View>
+      {shape === 'square' ? (
+        <Animated.View
+          style={[
+            {
+              flex: 1,
+              borderRadius: radius.sm,
+              alignItems: 'center',
+              justifyContent: 'center',
+              opacity: 0.4 + intensity * 0.6,
+            },
+            outline
+              ? {
+                  backgroundColor: 'transparent',
+                  borderWidth: 2,
+                  borderColor: color,
+                  boxShadow: glow ? `0 0 ${Math.round(size * 0.22)}px ${color}` : undefined,
+                }
+              : { backgroundColor: color },
+            animatedStyle,
+          ]}>
+          <Text variant="label" style={{ color: outline ? color : onAccent }}>
+            {hp}
+          </Text>
+        </Animated.View>
+      ) : (
+        // A triangle is always drawn filled (the border trick that makes it
+        // a triangle at all has no clean "outline only" version) — even on a
+        // neon theme, just at the same faded-with-damage opacity as squares.
+        <Animated.View style={[{ width: size, height: size }, animatedStyle, { opacity: 0.4 + intensity * 0.6 }]}>
+          <View pointerEvents="none" style={triangleBorderStyle(shape, size, color)} />
+          <Text
+            variant="label"
+            numeric
+            style={{
+              position: 'absolute',
+              left: triangleCentroid(shape, size).x - 9,
+              top: triangleCentroid(shape, size).y - 9,
+              width: 18,
+              textAlign: 'center',
+              color: outline ? color : onAccent,
+            }}>
+            {hp}
+          </Text>
+        </Animated.View>
+      )}
     </Animated.View>
   );
+}
+
+/**
+ * The classic zero-size-box border trick: two adjacent border widths at
+ * `size`, one coloured and the rest transparent, forms a right triangle. The
+ * anchor point (where the 0×0 box itself sits) has to be the cell's OWN
+ * corner opposite the coloured legs — verified by hand for all four shapes
+ * against `game/physics.ts`'s `hitTriangle`, so the picture matches the
+ * collision exactly. See the derivation in this session's notes if this
+ * ever needs to change; it is easy to get a mirrored or rotated shape here
+ * without the numbers actually being wrong anywhere else.
+ */
+function triangleBorderStyle(shape: 'tl' | 'tr' | 'bl' | 'br', size: number, color: string) {
+  const base = {
+    position: 'absolute' as const,
+    width: 0,
+    height: 0,
+    borderStyle: 'solid' as const,
+  };
+
+  if (shape === 'tr' || shape === 'bl') {
+    return {
+      ...base,
+      left: 0,
+      top: 0,
+      borderTopWidth: 0,
+      borderLeftWidth: 0,
+      borderRightWidth: size,
+      borderBottomWidth: size,
+      borderTopColor: 'transparent',
+      borderLeftColor: 'transparent',
+      borderRightColor: shape === 'tr' ? color : 'transparent',
+      borderBottomColor: shape === 'bl' ? color : 'transparent',
+    };
+  }
+
+  return {
+    ...base,
+    left: size,
+    top: 0,
+    borderTopWidth: 0,
+    borderRightWidth: 0,
+    borderLeftWidth: size,
+    borderBottomWidth: size,
+    borderTopColor: 'transparent',
+    borderRightColor: 'transparent',
+    borderLeftColor: shape === 'tl' ? color : 'transparent',
+    borderBottomColor: shape === 'br' ? color : 'transparent',
+  };
+}
+
+/** Where the hp number sits — the centroid of whichever half of the cell is
+ * actually solid, not the cell's own centre. */
+function triangleCentroid(shape: 'tl' | 'tr' | 'bl' | 'br', size: number): { x: number; y: number } {
+  const third = size / 3;
+  switch (shape) {
+    case 'tl':
+      return { x: third, y: third };
+    case 'tr':
+      return { x: third * 2, y: third };
+    case 'bl':
+      return { x: third, y: third * 2 };
+    case 'br':
+      return { x: third * 2, y: third * 2 };
+  }
 }
 
 function Dot({

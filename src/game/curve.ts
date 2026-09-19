@@ -35,12 +35,6 @@ export const AIM_HORIZONTAL_BOOST = 1.7;
 /**
  * Difficulty is a per-run choice, picked on "Yeni oyun" — not a settings
  * toggle, since it shapes a single run's whole curve, not the app.
- *
- * Only two levers move: how tough a block is, and how often a ball pickup
- * shows up. `cellsPerRow` (how much of a row fills) stays the same across all
- * three — thinning it out on `kolay` would make the board feel empty rather
- * than easy, and packing it on `zor` risks the "unplayable" the difficulty
- * was explicitly asked not to become.
  */
 export type Difficulty = 'kolay' | 'orta' | 'zor';
 
@@ -68,12 +62,47 @@ export function baseHp(turn: number, difficulty: Difficulty): number {
 /** Spread around the base, so a row is never one flat wall of equal numbers. */
 export const HP_SPREAD = { min: 0.8, max: 1.2 } as const;
 
-/** How many of the seven cells a new row fills, as turn grows. */
-export function cellsPerRow(turn: number): { min: number; max: number } {
-  if (turn < 5) return { min: 2, max: 3 };
-  if (turn < 20) return { min: 3, max: 4 };
-  if (turn < 50) return { min: 3, max: 5 };
-  return { min: 4, max: 6 };
+/**
+ * Chance a spawned block is a triangle (one of the four corner orientations,
+ * chosen evenly) instead of a plain square. A ball deflects off a triangle's
+ * diagonal at whatever angle that diagonal implies — see `game/physics.ts`'s
+ * `hitTriangle` — instead of the flat left/right/up/down a square always
+ * gives. Kept independent of difficulty on purpose: it changes the SHAPE of
+ * the puzzle, not how hard it is, so all three difficulties see it equally.
+ */
+export const TRIANGLE_CHANCE = 0.22;
+
+/**
+ * How many of the seven cells a new row fills, as turn grows.
+ *
+ * This used to be the same at every difficulty — only `baseHp` and the
+ * pickup chance moved. In practice a packed row is the thing that actually
+ * reads as "no room to breathe," regardless of how weak the blocks in it
+ * are: `kolay`'s softer blocks still fill nearly every column by turn 50,
+ * which looks and plays identically to `zor`. `kolay` now fills visibly
+ * fewer cells, `zor` visibly more — the density itself is a difficulty
+ * lever now, not just a shared constant the other two levers sit on top of.
+ */
+function cellsPerRowBase(turn: number): { min: number; max: number } {
+  if (turn < 5) return { min: 1, max: 2 };
+  if (turn < 20) return { min: 2, max: 3 };
+  if (turn < 50) return { min: 2, max: 4 };
+  return { min: 3, max: 5 };
+}
+
+const CELLS_PER_ROW_OFFSET: Record<Difficulty, number> = {
+  kolay: -1,
+  orta: 0,
+  zor: 1,
+};
+
+export function cellsPerRow(turn: number, difficulty: Difficulty): { min: number; max: number } {
+  const base = cellsPerRowBase(turn);
+  const offset = CELLS_PER_ROW_OFFSET[difficulty];
+  return {
+    min: Math.max(1, base.min + offset),
+    max: Math.max(2, Math.min(COLUMNS - 1, base.max + offset)),
+  };
 }
 
 /**

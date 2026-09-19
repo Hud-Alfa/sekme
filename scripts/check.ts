@@ -14,7 +14,16 @@ import { countBlocks, damage, descend, emptyBoard, spawnRow } from '../src/game/
 import { COLUMNS, ROWS, baseHp } from '../src/game/curve';
 import { initialState, reduce, seededRandom } from '../src/game/engine';
 import { HARD_PITY, SOFT_PITY, openCapsule, type Pity } from '../src/game/gacha';
-import { clampAim, hitAxis, reflect, rotate, stepWalls, subSteps } from '../src/game/physics';
+import {
+  clampAim,
+  hitAxis,
+  hitTriangle,
+  reflect,
+  reflectOff,
+  rotate,
+  stepWalls,
+  subSteps,
+} from '../src/game/physics';
 import {
   COMPACT_MAX,
   DEVICE_MATRIX,
@@ -116,6 +125,46 @@ console.log('\ncollision picks the surface, not the heading');
   // slipping through the seam between two blocks.
   eq('a corner still resolves', hitAxis({ x: 97, y: 97 }, 10, box) !== null, true);
   eq('dead centre falls back to the nearer wall', hitAxis({ x: 125, y: 125 }, 5, box), 'y');
+}
+
+console.log('\ntriangle blocks deflect off the diagonal, not the box');
+{
+  const box = { x: 100, y: 100, width: 50, height: 50 };
+
+  // Top-left solid: the open corner is bottom-right, so a ball approaching
+  // from there should hit, and one approaching from the solid corner's own
+  // territory should not have a shot fired INTO it read as "clear".
+  eq('tl: touching the diagonal from the open side', hitTriangle({ x: 130, y: 130 }, 10, box, 1) !== null, true);
+  eq('tl: far into the open corner is clear', hitTriangle({ x: 145, y: 145 }, 10, box, 1), null);
+  near('tl: normal points toward the open corner', hitTriangle({ x: 130, y: 130 }, 10, box, 1)!.normal.x, Math.SQRT1_2);
+
+  // Top-right solid: hypotenuse is the OTHER diagonal, so the open corner is
+  // bottom-left this time.
+  eq('tr: far into its open corner (bottom-left) is clear', hitTriangle({ x: 105, y: 145 }, 10, box, 2), null);
+  eq('tr: its solid corner (top-right) is not clear', hitTriangle({ x: 145, y: 105 }, 10, box, 2) !== null, true);
+
+  // The two corners sharing a diagonal (tl/br, tr/bl) must bounce a ball the
+  // same way off that shared line, regardless of which side is solid.
+  const tl = hitTriangle({ x: 130, y: 130 }, 15, box, 1)!;
+  const br = hitTriangle({ x: 120, y: 120 }, 15, box, 4)!;
+  eq('tl and br share a diagonal, opposite normals', tl.normal, { x: -br.normal.x, y: -br.normal.y });
+}
+
+console.log('\nreflecting off a diagonal is the general mirror formula');
+{
+  // Sanity: reflecting off a normal that IS an axis must agree with the
+  // dedicated axis reflect() — same physics, different surface shapes.
+  eq('a normal along +x matches an x-axis reflect', reflectOff({ x: 3, y: -4 }, { x: 1, y: 0 }), reflect({ x: 3, y: -4 }, 'x'));
+  eq('a normal along +y matches a y-axis reflect', reflectOff({ x: 3, y: -4 }, { x: 0, y: 1 }), reflect({ x: 3, y: -4 }, 'y'));
+
+  // The '/' diagonal (tl/br) swaps and negates both components.
+  const slash = reflectOff({ x: 5, y: -2 }, { x: Math.SQRT1_2, y: Math.SQRT1_2 });
+  near('off a tl/br diagonal, x', slash.x, 2);
+  near('off a tl/br diagonal, y', slash.y, -5);
+  // The '\' diagonal (tr/bl) swaps them straight.
+  const backslash = reflectOff({ x: 5, y: -2 }, { x: -Math.SQRT1_2, y: Math.SQRT1_2 });
+  near('off a tr/bl diagonal, x', backslash.x, -2);
+  near('off a tr/bl diagonal, y', backslash.y, 5);
 }
 
 console.log('\nwalls');

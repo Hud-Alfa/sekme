@@ -2,6 +2,7 @@ import {
   COLUMNS,
   HP_SPREAD,
   ROWS,
+  TRIANGLE_CHANCE,
   ballAmount,
   ballPickupChance,
   baseHp,
@@ -18,9 +19,15 @@ import {
  * exactly from a seed and `npm test` can assert on a whole simulated game.
  */
 
+/** Which corner of the cell is solid, for a triangle block — see
+ * `game/physics.ts`'s `hitTriangle` for what each one actually deflects
+ * like. `'square'` (the default, and the only shape before this) still
+ * means "the whole cell". */
+export type BlockShape = 'square' | 'tl' | 'tr' | 'bl' | 'br';
+
 export type Cell =
   | { kind: 'empty' }
-  | { kind: 'block'; hp: number; maxHp: number }
+  | { kind: 'block'; hp: number; maxHp: number; shape: BlockShape }
   | { kind: 'ball'; amount: number }
   | { kind: 'gold'; amount: number };
 
@@ -38,11 +45,13 @@ function pick(random: Random, min: number, max: number): number {
   return min + Math.floor(random() * (max - min + 1));
 }
 
+const TRIANGLE_SHAPES: BlockShape[] = ['tl', 'tr', 'bl', 'br'];
+
 /** A freshly spawned row for the given turn. */
 export function spawnRow(turn: number, random: Random, difficulty: Difficulty): Cell[] {
   const row: Cell[] = Array.from({ length: COLUMNS }, () => EMPTY);
 
-  const { min, max } = cellsPerRow(turn);
+  const { min, max } = cellsPerRow(turn, difficulty);
   const count = pick(random, min, Math.min(max, COLUMNS));
 
   const columns = Array.from({ length: COLUMNS }, (_, i) => i);
@@ -60,7 +69,9 @@ export function spawnRow(turn: number, random: Random, difficulty: Difficulty): 
   for (const column of chosen) {
     const spread = HP_SPREAD.min + random() * (HP_SPREAD.max - HP_SPREAD.min);
     const hp = Math.max(1, Math.round(base * spread));
-    row[column] = { kind: 'block', hp, maxHp: hp };
+    const shape: BlockShape =
+      random() < TRIANGLE_CHANCE ? TRIANGLE_SHAPES[Math.floor(random() * TRIANGLE_SHAPES.length)]! : 'square';
+    row[column] = { kind: 'block', hp, maxHp: hp, shape };
   }
 
   // One pickup, in a cell the blocks did not take. Without a steady supply of
@@ -115,7 +126,7 @@ export function damage(board: Board, row: number, column: number, amount = 1): {
     return { board: next, broke: true, scored: cell.maxHp };
   }
 
-  next[row]![column] = { kind: 'block', hp, maxHp: cell.maxHp };
+  next[row]![column] = { kind: 'block', hp, maxHp: cell.maxHp, shape: cell.shape ?? 'square' };
   return { board: next, broke: false, scored: 1 };
 }
 
