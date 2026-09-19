@@ -64,52 +64,55 @@ export default function PlayScreen() {
   // is capped by the column count and by the measured frame height.
   const boardWidth = Math.min(content, (frameHeight / ROWS) * COLUMNS);
 
+  // Back, the stats and restart used to sit in their own row above the
+  // board, leaving the panel's own top edge empty. They ride inside the
+  // panel's frame now instead — GameBoard renders this at the frame's own
+  // top, so that space actually holds something rather than just being
+  // border and background.
+  const header = (
+    <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
+      <IconButton accessibilityLabel={tr.common.back} tinted onPress={() => router.back()}>
+        <Text variant="heading">‹</Text>
+      </IconButton>
+      <View style={{ flex: 1, flexDirection: 'row', gap: space.lg }}>
+        <Stat label={tr.game.score} value={formatNumber(game.turn)} />
+        <Stat label={tr.game.best} value={formatNumber(progress.highScores[game.difficulty])} />
+        <Stat label={tr.game.gold} value={formatNumber(progress.gold)} />
+      </View>
+      {game.over ? null : (
+        <IconButton accessibilityLabel={tr.game.restart} tinted onPress={() => setShowRestart(true)}>
+          <Text variant="heading">↺</Text>
+        </IconButton>
+      )}
+    </View>
+  );
+
   return (
     <Screen>
-      <View style={{ flex: 1, gap: space.md }}>
-        <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
-          <IconButton accessibilityLabel={tr.common.back} tinted onPress={() => router.back()}>
-            <Text variant="heading">‹</Text>
-          </IconButton>
-          <View style={{ flex: 1, flexDirection: 'row', gap: space.lg }}>
-            <Stat label={tr.game.score} value={formatNumber(game.turn)} />
-            <Stat label={tr.game.best} value={formatNumber(progress.highScores[game.difficulty])} />
-            <Stat label={tr.game.gold} value={formatNumber(progress.gold)} />
-          </View>
-          {game.over ? null : (
-            <IconButton
-              accessibilityLabel={tr.game.restart}
-              tinted
-              onPress={() => setShowRestart(true)}>
-              <Text variant="heading">↺</Text>
-            </IconButton>
-          )}
-        </View>
-
-        {/* The board is column-width-bound, not height-bound — on a 7-wide
-            board there is always slack left over on a tall phone. Rather than
-            push that slack to one edge, GameBoard now draws its own frame the
-            full measured height and fills it — bordered, on-theme, with a
-            faint grid under the empty rows — so what used to be bare black
-            reads as the arena's own design instead of leftover space. */}
-        <View style={{ flex: 1, alignItems: 'center' }} onLayout={(e) => setFrameHeight(e.nativeEvent.layout.height)}>
-          <GameBoard
-            board={game.board}
-            ballCount={game.balls + liveBonus.balls}
-            launchX={game.launchX}
-            ballId={progress.selected}
-            boardThemeId={progress.boardTheme}
-            width={boardWidth}
-            frameHeight={frameHeight}
-            locked={resolving || game.over}
-            onProgress={(p) => setLiveBonus({ balls: p.ballsCollected, gold: p.goldCollected })}
-            onTurnComplete={async (result) => {
-              setResolving(true);
-              await resolveTurn(result);
-              setResolving(false);
-            }}
-          />
-        </View>
+      {/* The board is column-width-bound, not height-bound — on a 7-wide
+          board there is always slack left over on a tall phone. Rather than
+          push that slack to one edge, GameBoard now draws its own frame the
+          full measured height and fills it — bordered, on-theme, with a
+          faint grid under the empty rows — so what used to be bare black
+          reads as the arena's own design instead of leftover space. */}
+      <View style={{ flex: 1, alignItems: 'center' }} onLayout={(e) => setFrameHeight(e.nativeEvent.layout.height)}>
+        <GameBoard
+          board={game.board}
+          ballCount={game.balls + liveBonus.balls}
+          launchX={game.launchX}
+          ballId={progress.selected}
+          boardThemeId={progress.boardTheme}
+          width={boardWidth}
+          frameHeight={frameHeight}
+          header={header}
+          locked={resolving || game.over}
+          onProgress={(p) => setLiveBonus({ balls: p.ballsCollected, gold: p.goldCollected })}
+          onTurnComplete={async (result) => {
+            setResolving(true);
+            await resolveTurn(result);
+            setResolving(false);
+          }}
+        />
       </View>
 
       <Sheet visible={showOver} onClose={() => setShowOver(false)} title={tr.game.over}>

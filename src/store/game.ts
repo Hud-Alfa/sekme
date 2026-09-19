@@ -64,27 +64,41 @@ export const useGame = create<Store>((set, get) => ({
     const next = reduce(current, { type: 'resolve-turn', result, random: freshRandom() });
     set({ game: next });
 
+    // Gold banks turn by turn now, not only when a run ends — a player who
+    // wants to spend what they just earned should not have to lose the run
+    // first to do it. `next.gold` is the run's own running total, so only
+    // the DELTA since the last bank needs adding; by the time a run ends,
+    // every turn's share has already landed in `progress.gold` one at a
+    // time, this is just the last one.
+    const goldEarned = next.gold - current.gold;
+    const progress = get().progress;
+    const bankedProgress: Progress =
+      goldEarned > 0 ? { ...progress, gold: progress.gold + goldEarned } : progress;
+
     if (!next.over) {
+      if (goldEarned > 0) set({ progress: bankedProgress });
       // Saved after every turn, so a phone call mid-run costs nothing.
-      await repo.saveRun(next);
+      await Promise.all([
+        goldEarned > 0 ? repo.saveProgress(bankedProgress) : Promise.resolve(),
+        repo.saveRun(next),
+      ]);
       return;
     }
 
-    // The run is over: bank the gold, keep the best score for THIS run's
-    // difficulty (the other two are untouched), and drop the save.
-    const progress = get().progress;
-    const banked: Progress = {
-      ...progress,
-      gold: progress.gold + next.gold,
+    // The run is over: this turn's gold is already folded into
+    // bankedProgress above — only the best score and dropping the save
+    // remain.
+    const finalProgress: Progress = {
+      ...bankedProgress,
       highScores: {
-        ...progress.highScores,
-        [next.difficulty]: Math.max(progress.highScores[next.difficulty], next.turn),
+        ...bankedProgress.highScores,
+        [next.difficulty]: Math.max(bankedProgress.highScores[next.difficulty], next.turn),
       },
     };
 
-    set({ progress: banked });
+    set({ progress: finalProgress });
     await Promise.all([
-      repo.saveProgress(banked),
+      repo.saveProgress(finalProgress),
       repo.saveRun(null),
       repo.recordRun(next.turn, next.gold),
     ]);

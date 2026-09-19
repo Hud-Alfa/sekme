@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { AppState, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
@@ -124,6 +124,10 @@ type GameBoardProps = {
    * frame around it fills this height instead of stopping short — see the
    * comment above the frame View below. */
   frameHeight?: number;
+  /** Rendered at the top of the frame, inside the border — back/restart
+   * buttons and the score row, so the panel's own top edge holds something
+   * instead of being empty border and background. */
+  header?: ReactNode;
   onTurnComplete: (result: TurnResult) => void;
   /** Fires on any frame that actually changed something — a hit or a pickup —
       so the screen can show the running total climbing mid-turn instead of
@@ -140,6 +144,7 @@ export function GameBoard({
   boardThemeId,
   width,
   frameHeight,
+  header,
   onTurnComplete,
   onProgress,
   locked,
@@ -701,8 +706,6 @@ export function GameBoard({
         width,
         height: framed,
         alignSelf: 'center',
-        alignItems: 'center',
-        justifyContent: 'center',
         borderRadius: radius.xl,
         borderWidth: 2,
         borderColor: outline ? `${boardAccent}AA` : colors.border,
@@ -710,6 +713,11 @@ export function GameBoard({
         overflow: 'hidden',
         boxShadow: theme.glow ? `0 0 ${Math.round(width * 0.025)}px ${boardAccent}55` : undefined,
       }}>
+      {/* Back/restart and the score row live inside the frame now — the
+          panel's own top edge, not a separate row above it. */}
+      {header ? <View style={{ paddingHorizontal: space.md, paddingTop: space.sm }}>{header}</View> : null}
+
+      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
       <GestureDetector gesture={gesture}>
         <View style={{ width, height: height + LAUNCHER_STRIP }}>
           {/* A faint outline per cell, occupied or not — an empty row used to
@@ -733,6 +741,25 @@ export function GameBoard({
               />
             )),
           )}
+
+          {/* A persistent guide, not just the drag-time aim line — the aim
+              line only exists while a finger is down, so between shots there
+              was nothing marking which column the next one starts from. This
+              stays up the whole time, themed like the rest of the frame, and
+              sits under the blocks so a filled column still reads as filled
+              first. */}
+          <View
+            pointerEvents="none"
+            style={{
+              position: 'absolute',
+              left: launchX * width - 1,
+              top: 0,
+              width: 2,
+              height,
+              backgroundColor: boardAccent,
+              opacity: outline ? 0.45 : 0.3,
+            }}
+          />
 
         {board.map((row, r) =>
           row.map((original, c) => {
@@ -909,6 +936,7 @@ export function GameBoard({
           ))}
         </View>
       </GestureDetector>
+      </View>
     </View>
   );
 }
