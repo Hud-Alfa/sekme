@@ -20,6 +20,19 @@ export const STARTING_BALLS = 1;
 export const SPEED_IN_CELLS = 5.6;
 
 /**
+ * How much a sideways drag counts, relative to how far up the finger moved.
+ *
+ * The aim vector is the raw finger offset from the launch point — on a
+ * 7-column board that offset is capped by the board's own width, so a finger
+ * near the middle could never reach a wide angle no matter how far it
+ * dragged. Boosting the horizontal half of that vector before it is
+ * normalised (`clampAim`) is a one-number fix: the same drag now reaches a
+ * noticeably wider angle without touching the drag surface or the clamp
+ * itself.
+ */
+export const AIM_HORIZONTAL_BOOST = 1.7;
+
+/**
  * Difficulty is a per-run choice, picked on "Yeni oyun" — not a settings
  * toggle, since it shapes a single run's whole curve, not the app.
  *

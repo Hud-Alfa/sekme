@@ -12,13 +12,13 @@ import Animated, {
 
 import { findBall, type Ball } from '@/game/balls';
 import { EMPTY, type Board, type Cell } from '@/game/board';
-import { COLUMNS, ROWS, SPEED_IN_CELLS, STUCK } from '@/game/curve';
+import { AIM_HORIZONTAL_BOOST, COLUMNS, ROWS, SPEED_IN_CELLS, STUCK } from '@/game/curve';
 import type { TurnResult } from '@/game/engine';
 import { clampAim, hitAxis, rotate, stepWalls, subSteps } from '@/game/physics';
 import { findBoardTheme, themeColorFor, type BoardTheme } from '@/game/themes';
 import { formatNumber } from '@/lib/format';
 import { haptic } from '@/lib/haptics';
-import { duration, radius, settle, Text, timing, useColors, useTheme } from '@/ui';
+import { duration, radius, settle, space, Text, timing, useColors, useTheme } from '@/ui';
 
 /** A lucky-ball block break pays this much bonus gold, on the spot. Flat
  * rather than turn-scaled — it is a small surprise, not a second income. */
@@ -27,7 +27,7 @@ const LUCKY_GOLD_BONUS = 2;
 /** Reserved strip below the play field for the launcher mark and the current
  * ball count, so they never sit on top of a block even when the board is
  * stacked all the way to the floor. */
-const LAUNCHER_STRIP = 40;
+const LAUNCHER_STRIP = 52;
 
 /**
  * The playfield.
@@ -69,6 +69,13 @@ type Flight = {
   /** Balls still to be released, so the stream leaves over several frames. */
   queued: number;
   releaseTimer: number;
+  /** Balls/gold a ball has grabbed mid-flight but not yet brought home —
+   * held here per ball and only folded into the visible count once that
+   * ball actually lands (see the frame loop). A pickup grabbed early in a
+   * long bounce used to bump the counter before the ball itself was back,
+   * which read as the count updating for no visible reason. */
+  ballCredit: number[];
+  goldCredit: number[];
 };
 
 function emptyFlight(): Flight {
@@ -81,6 +88,8 @@ function emptyFlight(): Flight {
     live: new Array<number>(BALL_POOL).fill(0),
     queued: 0,
     releaseTimer: 0,
+    ballCredit: new Array<number>(BALL_POOL).fill(0),
+    goldCredit: new Array<number>(BALL_POOL).fill(0),
   };
 }
 
@@ -156,6 +165,10 @@ export function GameBoard({
   const aim = useSharedValue({ x: 0, y: -1 });
   const aiming = useSharedValue(0);
   const tally = useSharedValue({ scored: 0, balls: 0, gold: 0 });
+  // A quick pulse on the collector ring exactly when a ball lands WITH
+  // something to show for it — a small "it's home, and it counted" beat to
+  // go with the count only climbing on landing now, not mid-flight.
+  const collectPulse = useSharedValue(1);
 
   // The board as flat arrays: what is in each cell, how much health it has
   // left, and — for a pickup cell, ball or gold — how much it is worth.
@@ -249,6 +262,9 @@ export function GameBoard({
   // phone that is battery and heat spent on deciding to do nothing.
   const [inFlight, setInFlight] = useState(false);
 
+  // Short-lived particle bursts, one per block break (see `onBreak` below).
+  const [bursts, setBursts] = useState<{ id: number; left: number; top: number; color: string }[]>([]);
+
   // Mid-turn hit/pickup reporting: fired only on frames where a ball actually
   // touched something, never on every frame — the block views need to be
   // told a hit happened, but the JS thread does not need 60 messages a second
@@ -307,8 +323,29 @@ export function GameBoard({
   );
 
   // One haptic per broken block, never per bounce: forty balls rattling around
-  // would turn the phone into a buzzer and drain the battery doing it.
-  const onBreak = useCallback(() => haptic.press(), []);
+  // would turn the phone into a buzzer and drain the battery doing it. A
+  // break also spawns a short particle burst at that cell — the one referans
+  // effect this component was missing outright, not just a palette swap.
+  // Only the LAST block broken in a given frame gets a burst; several blocks
+  // rarely break on the exact same frame, and when they do, one burst reads
+  // as "something broke here" well enough.
+  const burstId = useRef(0);
+  const onBreak = useCallback(
+    (index: number) => {
+      haptic.press();
+      if (index < 0) return;
+      const r = Math.floor(index / COLUMNS);
+      const c = index % COLUMNS;
+      const id = burstId.current++;
+      const burstColor = themeColorFor(theme, index, colors.accent);
+      setBursts((prev) => [
+        ...prev,
+        { id, left: c * cell + cell / 2, top: r * cell + cell / 2, color: burstColor },
+      ]);
+      setTimeout(() => setBursts((prev) => prev.filter((b) => b.id !== id)), 500);
+    },
+    [cell, theme, colors.accent],
+  );
 
   /* ---- the frame loop -------------------------------------------------- */
 
@@ -338,6 +375,8 @@ export function GameBoard({
     const vx = [...f.vx];
     const vy = [...f.vy];
     const live = [...f.live];
+    const ballCredit = [...f.ballCredit];
+    const goldCredit = [...f.goldCredit];
     let queued = f.queued;
     let releaseTimer = f.releaseTimer - dt;
 
@@ -360,6 +399,7 @@ export function GameBoard({
     let ballsGot = tally.value.balls;
     let goldGot = tally.value.gold;
     let broke = false;
+    let brokeAt = -1;
     let changed = false;
     let moving = 0;
 
@@ -414,8 +454,9 @@ export function GameBoard({
               if ((hp[index] ?? 0) <= 0) {
                 kinds[index] = 0;
                 broke = true;
+                brokeAt = index;
                 if (g.luckyGoldChance > 0 && Math.random() < g.luckyGoldChance) {
-                  goldGot += LUCKY_GOLD_BONUS;
+                  goldCredit[i] += LUCKY_GOLD_BONUS;
                 }
               }
               // A pierce roll lets the ball skip reflecting off THIS block —
@@ -459,11 +500,15 @@ export function GameBoard({
               }
             } else {
               // Pickups do not deflect: a ball that bounced off a "+1" would
-              // punish the player for collecting it.
+              // punish the player for collecting it. The amount is HELD on
+              // this ball, not credited yet — it only counts once the ball
+              // that grabbed it actually comes home (below), so the visible
+              // total climbs as balls land, not the instant one touches a
+              // pickup mid-air.
               kinds[index] = 0;
               const pickupAmount = cells.value.amount[index] ?? 1;
-              if (kind === 2) ballsGot += pickupAmount;
-              else goldGot += pickupAmount;
+              if (kind === 2) ballCredit[i] += pickupAmount;
+              else goldCredit[i] += pickupAmount;
             }
           }
         }
@@ -477,6 +522,17 @@ export function GameBoard({
           // overwrites it, and whatever value is left when the turn ends is
           // correct by construction.
           lastLanding.value = position.x / g.width;
+
+          // This ball is home — anything it grabbed on the way finally
+          // counts, and only now.
+          if (ballCredit[i] > 0 || goldCredit[i] > 0) {
+            ballsGot += ballCredit[i];
+            goldGot += goldCredit[i];
+            ballCredit[i] = 0;
+            goldCredit[i] = 0;
+            changed = true;
+            collectPulse.value = withSequence(timing(1.4, duration.fast / 2), settle(1));
+          }
           break;
         }
       }
@@ -489,10 +545,10 @@ export function GameBoard({
     }
 
     cells.value = { kinds, hp, amount: cells.value.amount };
-    flight.value = { px, py, vx, vy, live, queued, releaseTimer };
+    flight.value = { px, py, vx, vy, live, queued, releaseTimer, ballCredit, goldCredit };
     tally.value = { scored, balls: ballsGot, gold: goldGot };
 
-    if (broke) runOnJS(onBreak)();
+    if (broke) runOnJS(onBreak)(brokeAt);
     if (changed) runOnJS(reportProgress)(kinds, hp, ballsGot, goldGot);
 
     if (moving === 0 && queued === 0) {
@@ -523,7 +579,10 @@ export function GameBoard({
 
   const aimAt = (x: number, y: number) => {
     'worklet';
-    aim.value = clampAim({ x: x - launchX * width, y: y - height });
+    // Boosted before the clamp normalises it — the raw offset is capped by
+    // the board's own width, which on a 7-column board never let a finger
+    // near the middle reach a wide angle no matter how far it dragged.
+    aim.value = clampAim({ x: (x - launchX * width) * AIM_HORIZONTAL_BOOST, y: y - height });
   };
 
   const gesture = Gesture.Pan()
@@ -563,12 +622,14 @@ export function GameBoard({
     ],
   }));
 
+  const collectStyle = useAnimatedStyle(() => ({ transform: [{ scale: collectPulse.value }] }));
+
   const dots = useMemo(() => Array.from({ length: BALL_POOL }, (_, i) => i), []);
 
   // Where the launcher mark and ball count sit, clamped so the group never
   // spills past the board's own edges — a shot fired from the far left or
   // right column used to push the label straight off-screen.
-  const markerWidth = 56;
+  const markerWidth = 64;
   const markerX = Math.min(Math.max(launchX * width - markerWidth / 2, 0), width - markerWidth);
 
   // The grid is column-width-bound — on a 7-wide board there is always slack
@@ -680,32 +741,63 @@ export function GameBoard({
             starts from — which is also exactly where the last ball came
             home, since a turn's end sets launchX to that spot. Lives in the
             reserved strip below the field, not on top of it, so it can
-            never land on a block even when the stack reaches the floor.
-            The ball count sits right above it — "how many, from where" is
-            one fact, so it reads as one instead of two disconnected labels. */}
+            never land on a block even when the stack reaches the floor. A
+            small pill (the equipped ball's own colour + the count) sits
+            above a collector ring that pulses the instant a ball actually
+            lands with something to show for it — "how many, from where,
+            and just now" instead of a bare number. */}
         <View
           pointerEvents="none"
           style={{
             position: 'absolute',
-            top: height + 2,
+            top: height + 4,
             left: markerX,
             width: markerWidth,
             alignItems: 'center',
           }}>
-          <Text variant="label" numeric numberOfLines={1} style={{ color: boardAccent }}>
-            ×{formatNumber(ballCount)}
-          </Text>
           <View
             style={{
-              marginTop: 3,
-              width: 14,
-              height: 14,
+              flexDirection: 'row',
+              alignItems: 'center',
+              gap: 4,
+              paddingHorizontal: space.xs,
+              paddingVertical: 2,
               borderRadius: radius.pill,
-              borderWidth: 2,
-              borderColor: boardAccent,
-              backgroundColor: outline ? `${boardAccent}0F` : colors.surfaceAlt,
-            }}
-          />
+              borderWidth: 1.5,
+              borderColor: outline ? `${boardAccent}99` : colors.border,
+              backgroundColor: outline ? `${boardAccent}14` : colors.surface,
+            }}>
+            <View
+              style={{
+                width: 9,
+                height: 9,
+                borderRadius: radius.pill,
+                backgroundColor: ball.color,
+                borderWidth: 1,
+                borderColor: scheme === 'light' ? 'rgba(11,11,15,0.3)' : 'rgba(255,255,255,0.6)',
+              }}
+            />
+            <Text variant="caption" numeric numberOfLines={1} style={{ color: boardAccent, fontWeight: '700' }}>
+              ×{formatNumber(ballCount)}
+            </Text>
+          </View>
+          <Animated.View
+            style={[
+              {
+                marginTop: 4,
+                width: 16,
+                height: 16,
+                borderRadius: radius.pill,
+                borderWidth: 2,
+                borderColor: boardAccent,
+                backgroundColor: outline ? `${boardAccent}0F` : colors.surfaceAlt,
+                alignItems: 'center',
+                justifyContent: 'center',
+              },
+              collectStyle,
+            ]}>
+            <View style={{ width: 6, height: 6, borderRadius: radius.pill, backgroundColor: boardAccent }} />
+          </Animated.View>
         </View>
 
         <Animated.View pointerEvents="none" style={[{ position: 'absolute' }, aimLine]}>
@@ -754,6 +846,10 @@ export function GameBoard({
 
           {dots.map((i) => (
             <Dot key={i} index={i} flight={flight} size={ballRadius * 2} ball={ball} scheme={scheme} glow={theme.glow} />
+          ))}
+
+          {bursts.map((b) => (
+            <Burst key={b.id} left={b.left} top={b.top} color={b.color} />
           ))}
         </View>
       </GestureDetector>
@@ -938,5 +1034,59 @@ function Dot({
         }}
       />
     </Animated.View>
+  );
+}
+
+/**
+ * A short burst of shards flung outward from a broken block, then faded —
+ * the referans reference's explosion effect, scaled down to a handful of
+ * plain squares instead of a bespoke particle system. Self-contained: it
+ * animates once on mount and the parent removes it from state after the
+ * same duration, so nothing here needs an `onComplete` round trip.
+ */
+function Burst({ left, top, color }: { left: number; top: number; color: string }) {
+  const progress = useSharedValue(0);
+
+  useEffect(() => {
+    progress.value = timing(1, duration.base);
+  }, [progress]);
+
+  const shards = useMemo(() => Array.from({ length: 6 }, (_, i) => (i / 6) * Math.PI * 2), []);
+
+  return (
+    <View pointerEvents="none" style={{ position: 'absolute', left, top }}>
+      {shards.map((angle, i) => (
+        <Shard key={i} angle={angle} progress={progress} color={color} />
+      ))}
+    </View>
+  );
+}
+
+function Shard({
+  angle,
+  progress,
+  color,
+}: {
+  angle: number;
+  progress: { value: number };
+  color: string;
+}) {
+  const style = useAnimatedStyle(() => {
+    const distance = progress.value * 22;
+    return {
+      opacity: 1 - progress.value,
+      transform: [
+        { translateX: Math.cos(angle) * distance - 3 },
+        { translateY: Math.sin(angle) * distance - 3 },
+        { rotate: `${angle + progress.value * 2}rad` },
+        { scale: 1 - progress.value * 0.5 },
+      ],
+    };
+  });
+
+  return (
+    <Animated.View
+      style={[{ position: 'absolute', width: 6, height: 6, borderRadius: 1.5, backgroundColor: color }, style]}
+    />
   );
 }
