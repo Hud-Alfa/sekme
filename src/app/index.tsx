@@ -2,11 +2,18 @@ import { Redirect, useRouter } from 'expo-router';
 import { useEffect, useState } from 'react';
 import { View } from 'react-native';
 
+import type { Difficulty } from '@/game/curve';
 import { tr } from '@/i18n/tr';
 import { formatNumber } from '@/lib/format';
 import { useGame } from '@/store/game';
 import { useSettings } from '@/store/settings';
 import { Button, IconButton, Screen, Sheet, space, Text, useScreen } from '@/ui';
+
+const DIFFICULTIES: { id: Difficulty; label: string; hint: string }[] = [
+  { id: 'kolay', label: tr.game.kolay, hint: tr.game.kolayHint },
+  { id: 'orta', label: tr.game.orta, hint: tr.game.ortaHint },
+  { id: 'zor', label: tr.game.zor, hint: tr.game.zorHint },
+];
 
 /**
  * Home. The only screen that decides whether a run is starting fresh or
@@ -24,7 +31,7 @@ export default function HomeScreen() {
   const newGame = useGame((s) => s.newGame);
 
   const { height: screenHeight } = useScreen();
-  const [showNewRunConfirm, setShowNewRunConfirm] = useState(false);
+  const [showDifficulty, setShowDifficulty] = useState(false);
 
   useEffect(() => {
     void load();
@@ -33,13 +40,24 @@ export default function HomeScreen() {
   if (!onboardingDone) return <Redirect href="/onboarding" />;
 
   const hasRun = game !== null;
+  const bestScore = Math.max(
+    progress.highScores.kolay,
+    progress.highScores.orta,
+    progress.highScores.zor,
+  );
+
+  const start = async (difficulty: Difficulty) => {
+    setShowDifficulty(false);
+    await newGame(difficulty);
+    router.push('/oyun');
+  };
 
   return (
     <Screen>
       <View style={{ flex: 1, gap: space.xl }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
           <View style={{ flex: 1, flexDirection: 'row', gap: space.lg }}>
-            <Stat label={tr.game.best} value={formatNumber(progress.highScore)} />
+            <Stat label={tr.game.best} value={formatNumber(bestScore)} />
             <Stat label={tr.game.gold} value={formatNumber(progress.gold)} />
           </View>
           <IconButton
@@ -67,14 +85,7 @@ export default function HomeScreen() {
                 <Button
                   label={tr.game.newGame}
                   variant={hasRun ? 'secondary' : 'primary'}
-                  onPress={async () => {
-                    if (hasRun) {
-                      setShowNewRunConfirm(true);
-                      return;
-                    }
-                    await newGame();
-                    router.push('/oyun');
-                  }}
+                  onPress={() => setShowDifficulty(true)}
                 />
                 <Button
                   label={tr.game.store}
@@ -88,27 +99,26 @@ export default function HomeScreen() {
       </View>
 
       <Sheet
-        visible={showNewRunConfirm}
-        onClose={() => setShowNewRunConfirm(false)}
-        title={tr.game.newRunConfirmTitle}>
+        visible={showDifficulty}
+        onClose={() => setShowDifficulty(false)}
+        title={tr.game.pickDifficultyTitle}>
         <View style={{ gap: space.lg }}>
-          <Text variant="body" color="textMuted">
-            {tr.game.newRunConfirmBody}
-          </Text>
-          <Button
-            label={tr.game.newRunConfirmAction}
-            variant="danger"
-            onPress={async () => {
-              setShowNewRunConfirm(false);
-              await newGame();
-              router.push('/oyun');
-            }}
-          />
-          <Button
-            label={tr.common.cancel}
-            variant="ghost"
-            onPress={() => setShowNewRunConfirm(false)}
-          />
+          {hasRun ? (
+            <Text variant="body" color="textMuted">
+              {tr.game.newRunConfirmBody}
+            </Text>
+          ) : null}
+          <View style={{ gap: space.md }}>
+            {DIFFICULTIES.map((d) => (
+              <Button
+                key={d.id}
+                label={`${d.label} — ${d.hint}`}
+                variant={d.id === 'orta' ? 'primary' : 'secondary'}
+                onPress={() => void start(d.id)}
+              />
+            ))}
+          </View>
+          <Button label={tr.common.cancel} variant="ghost" onPress={() => setShowDifficulty(false)} />
         </View>
       </Sheet>
     </Screen>

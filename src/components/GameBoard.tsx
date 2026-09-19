@@ -15,9 +15,14 @@ import { EMPTY, type Board, type Cell } from '@/game/board';
 import { COLUMNS, ROWS, SPEED_IN_CELLS, STUCK } from '@/game/curve';
 import type { TurnResult } from '@/game/engine';
 import { clampAim, hitAxis, rotate, stepWalls, subSteps } from '@/game/physics';
+import { findBoardTheme, themeColorFor, type BoardTheme } from '@/game/themes';
 import { formatNumber } from '@/lib/format';
 import { haptic } from '@/lib/haptics';
-import { duration, radius, settle, Text, timing, useColors } from '@/ui';
+import { duration, radius, settle, Text, timing, useColors, useTheme } from '@/ui';
+
+/** A lucky-ball block break pays this much bonus gold, on the spot. Flat
+ * rather than turn-scaled — it is a small surprise, not a second income. */
+const LUCKY_GOLD_BONUS = 2;
 
 /** Reserved strip below the play field for the launcher mark and the current
  * ball count, so they never sit on top of a block even when the board is
@@ -88,6 +93,8 @@ type GameBoardProps = {
   ballCount: number;
   launchX: number;
   ballId: string;
+  /** Which board skin is active — see `game/themes.ts`. Defaults to the free one. */
+  boardThemeId?: string;
   width: number;
   onTurnComplete: (result: TurnResult) => void;
   /** Fires on any frame that actually changed something — a hit or a pickup —
@@ -102,18 +109,27 @@ export function GameBoard({
   ballCount,
   launchX,
   ballId,
+  boardThemeId,
   width,
   onTurnComplete,
   onProgress,
   locked,
 }: GameBoardProps) {
   const colors = useColors();
+  const { scheme } = useTheme();
   const ball = findBall(ballId);
+  const power = ball.power ?? {};
+  const theme = findBoardTheme(boardThemeId ?? '');
+  // The board's own accent — the app's fixed accent for the free theme, the
+  // theme's own neon hue for every purchased one. Scoped to this component:
+  // headers, buttons and everything outside the play field stay the series'
+  // one fixed accent, per `tasarim-sistemi`.
+  const boardAccent = theme.accent ?? colors.accent;
 
   const cell = width / COLUMNS;
   const height = cell * ROWS;
   const ballRadius = cell * BALL_RADIUS_RATIO;
-  const speed = cell * SPEED_IN_CELLS;
+  const speed = cell * SPEED_IN_CELLS * (power.speedMult ?? 1);
 
   /* ---- shared state the worklet owns ---------------------------------- */
 
@@ -187,10 +203,38 @@ export function GameBoard({
     turnLocked.value = 0;
   }
 
-  const geometry = useSharedValue({ cell, width, height, ballRadius, speed });
+  // Ball powers ride along in the same shared value as the geometry, not a
+  // separate one — the frame loop already reads `g.*` once per frame, and
+  // these are exactly as static per-turn as `cell`/`speed` are.
+  const damagePerHit = power.damage ?? 1;
+  const pierceChance = power.pierceChance ?? 0;
+  const magnetRadius = power.magnetRadius ?? 0;
+  const luckyGoldChance = power.luckyGoldChance ?? 0;
+
+  const geometry = useSharedValue({
+    cell,
+    width,
+    height,
+    ballRadius,
+    speed,
+    damagePerHit,
+    pierceChance,
+    magnetRadius,
+    luckyGoldChance,
+  });
   useEffect(() => {
-    geometry.value = { cell, width, height, ballRadius, speed };
-  }, [cell, width, height, ballRadius, speed, geometry]);
+    geometry.value = {
+      cell,
+      width,
+      height,
+      ballRadius,
+      speed,
+      damagePerHit,
+      pierceChance,
+      magnetRadius,
+      luckyGoldChance,
+    };
+  }, [cell, width, height, ballRadius, speed, damagePerHit, pierceChance, magnetRadius, luckyGoldChance, geometry]);
 
   /* ---- crossing back to JS -------------------------------------------- */
 
@@ -349,19 +393,33 @@ export function GameBoard({
             if (kind === 0) continue;
 
             const box = { x: c * g.cell, y: r * g.cell, width: g.cell, height: g.cell };
-            const axis = hitAxis(position, g.ballRadius, box);
+            // A pickup reaches out to the ball's magnet radius, not just its
+            // physical radius — a block's hitbox never grows, only a
+            // pickup's, so magnet balls never gain reach through a wall.
+            const reach = kind === 1 ? g.ballRadius : g.ballRadius + g.magnetRadius * g.cell;
+            const axis = hitAxis(position, reach, box);
             if (axis === null) continue;
 
             changed = true;
 
             if (kind === 1) {
-              hp[index] = (hp[index] ?? 1) - 1;
+              hp[index] = (hp[index] ?? 1) - g.damagePerHit;
               scored += 1;
               if ((hp[index] ?? 0) <= 0) {
                 kinds[index] = 0;
                 broke = true;
+                if (g.luckyGoldChance > 0 && Math.random() < g.luckyGoldChance) {
+                  goldGot += LUCKY_GOLD_BONUS;
+                }
               }
-              if (!blockHit) {
+              // A pierce roll lets the ball skip reflecting off THIS block —
+              // it keeps going, possibly straight into whatever is behind it.
+              // Damage above still applies either way; only the bounce is
+              // skipped. Rolled once per block per sub-step, not once per
+              // ball per frame, so a pierce ball still bounces normally off
+              // every OTHER block it meets.
+              const pierced = g.pierceChance > 0 && Math.random() < g.pierceChance;
+              if (!blockHit && !pierced) {
                 blockHit = true;
                 velocity = {
                   x: axis === 'x' ? -velocity.x : velocity.x,
@@ -530,8 +588,10 @@ export function GameBoard({
                   left={left}
                   top={top}
                   size={cell}
-                  accent={colors.accent}
+                  color={themeColorFor(theme, index, colors.accent)}
                   onAccent={colors.onAccent}
+                  style={theme.style}
+                  glow={theme.glow}
                 />
               );
             }
@@ -581,7 +641,7 @@ export function GameBoard({
             width: markerWidth,
             alignItems: 'center',
           }}>
-          <Text variant="label" color="accent" numeric numberOfLines={1}>
+          <Text variant="label" numeric numberOfLines={1} style={{ color: boardAccent }}>
             ×{formatNumber(ballCount)}
           </Text>
           <View
@@ -591,7 +651,7 @@ export function GameBoard({
               height: 14,
               borderRadius: radius.pill,
               borderWidth: 2,
-              borderColor: colors.accent,
+              borderColor: boardAccent,
               backgroundColor: colors.bg,
             }}
           />
@@ -609,7 +669,7 @@ export function GameBoard({
               height: 18,
               borderRadius: radius.pill,
               borderWidth: 2,
-              borderColor: colors.accent,
+              borderColor: boardAccent,
               opacity: 0.5,
             }}
           />
@@ -621,7 +681,7 @@ export function GameBoard({
               width: 4,
               height: height * 0.32,
               borderRadius: radius.pill,
-              backgroundColor: colors.accent,
+              backgroundColor: boardAccent,
             }}
           />
           <View
@@ -636,13 +696,13 @@ export function GameBoard({
               borderBottomWidth: 13,
               borderLeftColor: 'transparent',
               borderRightColor: 'transparent',
-              borderBottomColor: colors.accent,
+              borderBottomColor: boardAccent,
             }}
           />
         </Animated.View>
 
         {dots.map((i) => (
-          <Dot key={i} index={i} flight={flight} size={ballRadius * 2} ball={ball} />
+          <Dot key={i} index={i} flight={flight} size={ballRadius * 2} ball={ball} scheme={scheme} glow={theme.glow} />
         ))}
       </View>
     </GestureDetector>
@@ -661,16 +721,21 @@ function BlockCell({
   left,
   top,
   size,
-  accent,
+  color,
   onAccent,
+  style: blockStyle,
+  glow,
 }: {
   hp: number;
   maxHp: number;
   left: number;
   top: number;
   size: number;
-  accent: string;
+  /** Resolved per-cell colour — the theme's accent, or one hue of its palette. */
+  color: string;
   onAccent: string;
+  style: BoardTheme['style'];
+  glow: boolean;
 }) {
   const punch = useSharedValue(1);
   const previousHp = useRef(hp);
@@ -684,11 +749,12 @@ function BlockCell({
     previousHp.current = hp;
   }, [hp, punch]);
 
-  const style = useAnimatedStyle(() => ({ transform: [{ scale: punch.value }] }));
+  const animatedStyle = useAnimatedStyle(() => ({ transform: [{ scale: punch.value }] }));
 
   // Colour tracks toughness, but the number is always printed: the shade is
   // a hint, the digit is the fact.
   const intensity = Math.min(1, hp / Math.max(1, maxHp));
+  const outline = blockStyle === 'outline';
 
   // Split in two: the outer view owns `exiting` and nothing else, the inner
   // one owns the punch scale and the intensity opacity — Reanimated warns
@@ -706,12 +772,19 @@ function BlockCell({
             borderRadius: radius.sm,
             alignItems: 'center',
             justifyContent: 'center',
-            backgroundColor: accent,
             opacity: 0.4 + intensity * 0.6,
           },
-          style,
+          outline
+            ? {
+                backgroundColor: 'transparent',
+                borderWidth: 2,
+                borderColor: color,
+                boxShadow: glow ? `0 0 ${Math.round(size * 0.22)}px ${color}` : undefined,
+              }
+            : { backgroundColor: color },
+          animatedStyle,
         ]}>
-        <Text variant="label" style={{ color: onAccent }}>
+        <Text variant="label" style={{ color: outline ? color : onAccent }}>
           {hp}
         </Text>
       </Animated.View>
@@ -724,11 +797,16 @@ function Dot({
   flight,
   size,
   ball,
+  scheme,
+  glow,
 }: {
   index: number;
   flight: { value: Flight };
   size: number;
   ball: Ball;
+  scheme: 'light' | 'dark';
+  /** The board theme's own glow, on top of the rarity glow every ball gets. */
+  glow: boolean;
 }) {
   const style = useAnimatedStyle(() => {
     const live = flight.value.live[index] ?? 0;
@@ -743,8 +821,16 @@ function Dot({
 
   // Higher rarity, more glow — the trail field was always in the catalogue,
   // it just never reached a view. A plain filled circle read the same for
-  // every ball regardless of what a capsule actually paid for.
-  const glowSize = size * (1.7 + Math.min(ball.trail, 12) / 8);
+  // every ball regardless of what a capsule actually paid for. A neon board
+  // theme pushes it further still, to match the blocks' own glow.
+  const glowSize = size * (1.7 + Math.min(ball.trail, 12) / 8) * (glow ? 1.15 : 1);
+
+  // The rim used to be a fixed near-white, which all but vanished on the
+  // light theme's near-white background — the exact "klasik top" contrast
+  // complaint this fixes. Flipping it dark in light mode keeps every ball,
+  // not only klasik, readable regardless of theme.
+  const rimColor = scheme === 'light' ? 'rgba(11,11,15,0.55)' : 'rgba(255,255,255,0.85)';
+  const highlightColor = scheme === 'light' ? 'rgba(11,11,15,0.35)' : 'rgba(255,255,255,0.7)';
 
   return (
     <Animated.View pointerEvents="none" style={[{ position: 'absolute' }, style]}>
@@ -761,12 +847,13 @@ function Dot({
           height: glowSize,
           borderRadius: glowSize / 2,
           backgroundColor: ball.color,
-          opacity: ball.trail > 0 ? 0.28 : 0.16,
+          opacity: (ball.trail > 0 ? 0.28 : 0.16) * (glow ? 1.3 : 1),
         }}
       />
       {/* A dark ring first, so the ball reads against light blocks and a
-          light background alike, then the fill, then a bright rim on top —
-          three tones instead of one flat circle. */}
+          light background alike, then the fill, then a rim on top — three
+          tones instead of one flat circle. The ring stays translucent black
+          on both schemes (it is a shadow, not a highlight); the rim flips. */}
       <View
         style={{
           width: size,
@@ -783,7 +870,7 @@ function Dot({
             borderRadius: (size * 0.86) / 2,
             backgroundColor: ball.color,
             borderWidth: Math.max(1.5, size * 0.12),
-            borderColor: '#FFFFFFD9',
+            borderColor: rimColor,
           }}
         />
       </View>
@@ -795,7 +882,7 @@ function Dot({
           width: size * 0.3,
           height: size * 0.3,
           borderRadius: size * 0.15,
-          backgroundColor: '#FFFFFFB3',
+          backgroundColor: highlightColor,
         }}
       />
     </Animated.View>

@@ -61,11 +61,28 @@ Bütün denge sayıları **yalnız `src/game/curve.ts` içinde.** Zorluğu deği
 değişikliği değil sayı değişikliğidir — Blok Patlat'taki `scoring.ts` ayrımının aynısı.
 Eğrinin geri gitmediğini ve tek turda dörtten fazla sıçramadığını `npm test` doğruluyor.
 
-## Ekonomi ve kapsül
+**Zorluk (`Difficulty`) turun kendisine ait bir seçim** — "Yeni oyun"da bir kez
+seçilir, oyun ayarı değil. Yalnız iki kol hareket eder: `HP_MULTIPLIER` (blok
+dayanıklılığı) ve `ballPickupChance` (top eşyası sıklığı) — `cellsPerRow` (satırın ne
+kadarının dolduğu) üç zorlukta da aynı kalır, çünkü onu seyreltmek kolayı boş
+hissettirir, sıklaştırmak zoru "oynanmicak kadar zor" yapar. Rekor zorluk başına ayrı
+tutulur (`Progress.highScores`) — kolayda kırılan bir rekor zoru anlamsız kılmasın diye.
+
+## Ekonomi: kapsül (toplar) ve mağaza (temalar)
 
 **Altın yalnızca oynayarak kazanılır. Satın alınamaz ve alınamayacak** — bu seride Play
 Billing yok. Bu, cimri olmanın olağan sebebini ortadan kaldırıyor; o yüzden garanti
 (pity) kuralları bilerek cömert: şanssızlık sabra mal olur, paraya asla.
+
+**Toplar artık kozmetik değil — küçük, birleşen oyun içi özellikleri var**
+(`src/game/balls.ts` → `BallPower`: hasar, hız, mıknatıs, delme, şanslı altın).
+Bu, önceki bir kararın **kullanıcının açık isteğiyle** tersine çevrilmesi (19 Eylül) —
+eski kural ("toplar yalnız görünüm") tek oyunculu bir oyunda anlamsız bir kısıtlamaydı;
+burada rekabet veya adalet sorunu yok, sadece çeşitlilik. Değişmeyen şey şu: bir güç
+**asla parayla satılmaz** — yalnızca kapsül şansıyla ve zamanla kazanılır, tıpkı altının
+kendisi gibi. Yeni bir top eklerken güç eklemekten çekinme; sadece dengesiz bir tekil
+gücü tek başına en güçlü top yapmaktan kaçın (bkz. mevcut on topun kademeli dağılımı:
+yaygın tek düz istatistik, mistik hepsi bir arada).
 
 - Yumuşak garanti: 10 kapsülde bir Destansı veya üzeri
 - Sert garanti: 50 kapsülde bir Efsanevi veya üzeri
@@ -74,9 +91,12 @@ Billing yok. Bu, cimri olmanın olağan sebebini ortadan kaldırıyor; o yüzden
 **Oranlar kapsül ekranında yazılı.** Play bu şekildeki her sistem için oran açıklaması
 istiyor, ve oranını saklayan bir makinenin saklayacak bir şeyi vardır.
 
-> ⚠️ Yeni bir top eklenirken **oyunu etkileyen** bir özellik verme. Toplar yalnız
-> görünüm. Bu kural bir kere bozulursa koleksiyon "ödeme yapan kazanır"a döner —
-> burada ödeme olmasa bile oynamayan kaybeder demektir.
+**Temalar (`src/game/themes.ts`) kozmetiğin eski işini üstlendi: tamamen görsel,
+sadece tahtanın kendisini etkiler** (bloklar, nişan çizgisi, fırlatma işareti — başlık,
+buton, Ayarlar gibi uygulamanın geri kalanı hep tek sabit accent'te kalır,
+`tasarim-sistemi`nin kuralı burada bozulmaz). Kapsülün tersine **doğrudan altınla
+satın alınır, şans yok, kopya yok** — kapsül oranlarını sevmeyen biri için garantili bir
+kişiselleştirme yolu, bilerek ucuz (50-80 altın, bir kapsülün yarısından azı).
 
 ## Kalıcılık
 

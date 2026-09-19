@@ -1,5 +1,5 @@
 import { descend, emptyBoard, type Board, type Random } from '@/game/board';
-import { STARTING_BALLS } from '@/game/curve';
+import { DEFAULT_DIFFICULTY, STARTING_BALLS, type Difficulty } from '@/game/curve';
 
 /**
  * Turn-level game state. `(state, action) => state`, with randomness injected,
@@ -20,6 +20,8 @@ export type GameState = {
   /** Column the next shot starts from, 0..1 across the board. */
   launchX: number;
   over: boolean;
+  /** Chosen once, on "Yeni oyun" — fixed for the whole run. */
+  difficulty: Difficulty;
 };
 
 export type TurnResult = {
@@ -37,11 +39,11 @@ export type Action =
   | { type: 'start' }
   | { type: 'resolve-turn'; result: TurnResult; random: Random };
 
-export function initialState(random: Random): GameState {
+export function initialState(random: Random, difficulty: Difficulty = DEFAULT_DIFFICULTY): GameState {
   const board = emptyBoard();
   // The first row exists before the first shot, so the opening screen has
   // something to aim at rather than an empty field.
-  const { board: seeded } = descend(board, 1, random);
+  const { board: seeded } = descend(board, 1, random, difficulty);
 
   return {
     board: seeded,
@@ -50,6 +52,7 @@ export function initialState(random: Random): GameState {
     gold: 0,
     launchX: 0.5,
     over: false,
+    difficulty,
   };
 }
 
@@ -68,7 +71,7 @@ export function reduce(state: GameState, action: Action): GameState {
       // action.result.board is state.board with this turn's damage and
       // pickups already applied — descending the stale state.board instead
       // would silently discard every hit the turn just landed.
-      const { board, overflow } = descend(action.result.board, turn, action.random);
+      const { board, overflow } = descend(action.result.board, turn, action.random, state.difficulty);
 
       return {
         board,
@@ -77,6 +80,7 @@ export function reduce(state: GameState, action: Action): GameState {
         gold,
         launchX: action.result.launchX,
         over: overflow,
+        difficulty: state.difficulty,
       };
     }
 

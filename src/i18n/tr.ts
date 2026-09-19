@@ -32,14 +32,23 @@ export const tr = {
       'Bu turdaki tahta ve skor kaybolacak. Toplarının, altınının ve rekorunun hiçbiri etkilenmez.',
     restartConfirmAction: 'Evet, sıfırla',
 
-    newRunConfirmTitle: 'Yeni oyuna başlansın mı?',
     newRunConfirmBody:
       'Sürmekte olan oyunun tahtası ve skoru kaybolacak. Toplarının, altınının ve rekorunun hiçbiri etkilenmez.',
-    newRunConfirmAction: 'Evet, yeni oyun',
+
+    pickDifficultyTitle: 'Zorluk seç',
+    difficulty: 'Zorluk',
+    kolay: 'Kolay',
+    orta: 'Orta',
+    zor: 'Zor',
+    kolayHint: 'Bloklar daha zayıf, top daha sık çıkar',
+    ortaHint: 'Dengeli',
+    zorHint: 'Bloklar daha güçlü, top daha seyrek çıkar',
   },
 
   capsule: {
     title: 'Kapsül',
+    tabBalls: 'Toplar',
+    tabThemes: 'Temalar',
     collection: 'Koleksiyon',
     open: 'Kapsül aç',
     cost: '{cost} altın',
@@ -60,10 +69,31 @@ export const tr = {
     odds: 'Çıkma oranları',
     oddsBody:
       'Kapsül ücretsizdir: altın yalnızca oynayarak kazanılır, satın alınamaz. ' +
-      'Toplar yalnız görünüm değiştirir — hiçbiri oyunu kolaylaştırmaz.',
+      'Her topun kendine özgü küçük bir oyun içi özelliği var — hiçbiri diğerini geçersiz kılmaz, ' +
+      'hepsi farklı bir oynanış hissi verir.',
     pity: 'Garanti',
     pityBody:
       '{soft} kapsülde bir Destansı veya üzeri, {hard} kapsülde bir Efsanevi veya üzeri garanti.',
+    power: {
+      none: 'Özel bir etkisi yok',
+      damage: '{n}× hasar',
+      speed: '%{n} daha hızlı',
+      magnet: 'Mıknatıs: {n} hücre',
+      pierce: '%{n} delme şansı',
+      lucky: '%{n} şanslı altın',
+    },
+  },
+
+  theme: {
+    title: 'Temalar',
+    owned: '{owned} / {total} tema',
+    price: '{price} altın',
+    free: 'Ücretsiz',
+    select: 'Bunu kullan',
+    selected: 'Kullanılıyor',
+    buy: 'Satın al',
+    notEnough: 'Yeterli altının yok',
+    hint: 'Doğrudan satın alınır — şans yok, kopya yok.',
   },
 
   common: {

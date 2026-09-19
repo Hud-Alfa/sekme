@@ -1,13 +1,35 @@
 /**
  * The ball catalogue.
  *
- * Every ball plays identically: same radius, same speed, same hit. What differs
- * is how it looks and sounds. That is deliberate and it is the whole economy —
- * progress comes from collecting, never from power, so a player who never opens
- * a capsule is not playing a worse game than one who has.
+ * Every ball used to play identically — collecting was for looks only. That
+ * changed on purpose: balls now carry real, small, composable effects
+ * (`power`), and progress through the collection is progress in the run
+ * itself, not just the shelf. See `.claude/CLAUDE.md` for why this is no
+ * longer "cosmetic only" and what stayed true anyway (gold is still only
+ * ever earned, never bought, so a power is never for sale — only for luck
+ * and time).
  */
 
 export type Rarity = 'yaygin' | 'nadir' | 'destansi' | 'efsanevi' | 'mistik';
+
+/**
+ * Every field is optional and additive — `undefined`/`0` means "no different
+ * than Klasik". Keeping them as small independent numbers (rather than named
+ * "abilities") is what lets `GameBoard.tsx` apply all of them with a handful
+ * of `?? default` reads instead of a branch per ball.
+ */
+export type BallPower = {
+  /** Extra hit-point damage per touch. 1 is the baseline every ball has. */
+  damage?: number;
+  /** Multiplies `SPEED_IN_CELLS`. 1 is normal speed. */
+  speedMult?: number;
+  /** Reach, in cells, for pulling in a ball/gold pickup before actually touching it. */
+  magnetRadius?: number;
+  /** Chance a block hit does not reflect the ball — it punches through instead. */
+  pierceChance?: number;
+  /** Chance breaking a block also credits a small bonus gold payout on the spot. */
+  luckyGoldChance?: number;
+};
 
 export type Ball = {
   id: string;
@@ -17,6 +39,7 @@ export type Ball = {
   color: string;
   /** Length of the motion trail, 0 for none. */
   trail: number;
+  power?: BallPower;
 };
 
 export const RARITY_ORDER: Rarity[] = ['yaygin', 'nadir', 'destansi', 'efsanevi', 'mistik'];
@@ -40,28 +63,82 @@ export const DUPLICATE_REFUND: Record<Rarity, number> = {
 };
 
 export const BALLS: Ball[] = [
-  { id: 'klasik', name: 'Klasik', rarity: 'yaygin', color: '#F4F4F7', trail: 0 },
-  { id: 'kiremit', name: 'Kiremit', rarity: 'yaygin', color: '#E4794A', trail: 0 },
-  { id: 'deniz', name: 'Deniz', rarity: 'yaygin', color: '#4AA3E4', trail: 0 },
-  { id: 'limon', name: 'Limon', rarity: 'yaygin', color: '#E4D14A', trail: 0 },
+  // Yaygın: one clean stat each, easy to feel on the very first capsule.
+  {
+    id: 'klasik',
+    name: 'Klasik',
+    rarity: 'yaygin',
+    // Was near-white (#F4F4F7) — all but invisible against the light theme's
+    // off-white background even with the Dot's ring behind it. A mid slate
+    // reads clearly on both the light and dark surface.
+    color: '#6B6B76',
+    trail: 0,
+  },
+  { id: 'kiremit', name: 'Kiremit', rarity: 'yaygin', color: '#E4794A', trail: 0, power: { speedMult: 1.06 } },
+  { id: 'deniz', name: 'Deniz', rarity: 'yaygin', color: '#4AA3E4', trail: 0, power: { magnetRadius: 0.5 } },
 
-  { id: 'karpuz', name: 'Karpuz', rarity: 'nadir', color: '#E2455F', trail: 2 },
-  { id: 'nazar', name: 'Nazar', rarity: 'nadir', color: '#2F6BD8', trail: 2 },
-  { id: 'kestane', name: 'Kestane', rarity: 'nadir', color: '#8A5A2B', trail: 2 },
+  // Nadir: one stronger single stat.
+  { id: 'karpuz', name: 'Karpuz', rarity: 'nadir', color: '#E2455F', trail: 2, power: { damage: 2 } },
+  { id: 'kestane', name: 'Kestane', rarity: 'nadir', color: '#8A5A2B', trail: 2, power: { pierceChance: 0.15 } },
 
-  { id: 'plazma', name: 'Plazma', rarity: 'destansi', color: '#B14AE4', trail: 5 },
-  { id: 'yildiz', name: 'Yıldız', rarity: 'destansi', color: '#39D6C0', trail: 5 },
+  // Destansı: two stats start combining.
+  {
+    id: 'plazma',
+    name: 'Plazma',
+    rarity: 'destansi',
+    color: '#B14AE4',
+    trail: 5,
+    power: { speedMult: 1.15, magnetRadius: 0.5 },
+  },
+  { id: 'yildiz', name: 'Yıldız', rarity: 'destansi', color: '#39D6C0', trail: 5, power: { luckyGoldChance: 0.12 } },
 
-  { id: 'alev', name: 'Alev', rarity: 'efsanevi', color: '#FF7A18', trail: 8 },
-  { id: 'karadelik', name: 'Kara Delik', rarity: 'efsanevi', color: '#1B1B24', trail: 8 },
+  // Efsanevi: heavier combinations.
+  { id: 'alev', name: 'Alev', rarity: 'efsanevi', color: '#FF7A18', trail: 8, power: { damage: 2, speedMult: 1.1 } },
+  {
+    id: 'karadelik',
+    name: 'Kara Delik',
+    rarity: 'efsanevi',
+    color: '#1B1B24',
+    trail: 8,
+    power: { magnetRadius: 1.2, pierceChance: 0.1 },
+  },
 
-  { id: 'goktasi', name: 'Göktaşı', rarity: 'mistik', color: '#FFD166', trail: 12 },
+  // Mistik: the whole kit, one ball.
+  {
+    id: 'goktasi',
+    name: 'Göktaşı',
+    rarity: 'mistik',
+    color: '#FFD166',
+    trail: 12,
+    power: { damage: 2, speedMult: 1.15, luckyGoldChance: 0.15 },
+  },
 ];
 
 export const DEFAULT_BALL = 'klasik';
 
 export function ballsOfRarity(rarity: Rarity): Ball[] {
   return BALLS.filter((b) => b.rarity === rarity);
+}
+
+export type PowerLine = { key: 'damage' | 'speed' | 'magnet' | 'pierce' | 'lucky'; value: number };
+
+/**
+ * Turns a ball's `power` into displayable facts, one per active stat — never
+ * text. `tr.capsule.power` owns the Turkish phrasing; this only decides WHICH
+ * lines apply and what number goes in them, so the wording can change without
+ * touching game logic and vice versa.
+ */
+export function describePower(power: BallPower | undefined): PowerLine[] {
+  if (!power) return [];
+  const lines: PowerLine[] = [];
+  if (power.damage && power.damage > 1) lines.push({ key: 'damage', value: power.damage });
+  if (power.speedMult && power.speedMult > 1) {
+    lines.push({ key: 'speed', value: Math.round((power.speedMult - 1) * 100) });
+  }
+  if (power.magnetRadius) lines.push({ key: 'magnet', value: power.magnetRadius });
+  if (power.pierceChance) lines.push({ key: 'pierce', value: Math.round(power.pierceChance * 100) });
+  if (power.luckyGoldChance) lines.push({ key: 'lucky', value: Math.round(power.luckyGoldChance * 100) });
+  return lines;
 }
 
 export function findBall(id: string): Ball {

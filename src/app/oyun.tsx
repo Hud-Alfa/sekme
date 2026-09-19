@@ -24,6 +24,7 @@ export default function PlayScreen() {
   const game = useGame((s) => s.game);
   const progress = useGame((s) => s.progress);
   const resolveTurn = useGame((s) => s.resolveTurn);
+  const newGame = useGame((s) => s.newGame);
 
   const { content, height: screenHeight } = useScreen();
   const [showOver, setShowOver] = useState(false);
@@ -68,7 +69,7 @@ export default function PlayScreen() {
           </IconButton>
           <View style={{ flex: 1, flexDirection: 'row', gap: space.lg }}>
             <Stat label={tr.game.score} value={formatNumber(game.turn)} />
-            <Stat label={tr.game.best} value={formatNumber(progress.highScore)} />
+            <Stat label={tr.game.best} value={formatNumber(progress.highScores[game.difficulty])} />
             <Stat label={tr.game.gold} value={formatNumber(progress.gold)} />
           </View>
           {game.over ? null : (
@@ -92,6 +93,7 @@ export default function PlayScreen() {
             ballCount={game.balls + liveBonus.balls}
             launchX={game.launchX}
             ballId={progress.selected}
+            boardThemeId={progress.boardTheme}
             width={boardWidth}
             locked={resolving || game.over}
             onProgress={(p) => setLiveBonus({ balls: p.ballsCollected, gold: p.goldCollected })}
@@ -110,7 +112,7 @@ export default function PlayScreen() {
             {tr.game.overBody}
           </Text>
 
-          {game.turn >= progress.highScore ? (
+          {game.turn >= progress.highScores[game.difficulty] ? (
             <Text variant="heading" color="accent">
               {tr.game.newRecord}
             </Text>
@@ -144,9 +146,11 @@ export default function PlayScreen() {
           <Button
             label={tr.game.restartConfirmAction}
             variant="danger"
-            onPress={() => {
+            onPress={async () => {
               setShowRestart(false);
-              router.replace('/');
+              // Same difficulty, a fresh board — "sıfırla" means restart this
+              // run, not abandon it back to the home screen.
+              await newGame(game.difficulty);
             }}
           />
           <Button label={tr.common.cancel} variant="ghost" onPress={() => setShowRestart(false)} />

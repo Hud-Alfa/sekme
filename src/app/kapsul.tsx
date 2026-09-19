@@ -1,9 +1,11 @@
 import { useRouter } from 'expo-router';
+import { useEffect, useState } from 'react';
 import { View } from 'react-native';
 
-import { BALLS, RARITY_ODDS, RARITY_ORDER, type Rarity } from '@/game/balls';
+import { BALLS, RARITY_ODDS, RARITY_ORDER, describePower, type BallPower, type Rarity } from '@/game/balls';
 import { CAPSULE_COST } from '@/game/curve';
 import { HARD_PITY, SOFT_PITY } from '@/game/gacha';
+import { BOARD_THEMES } from '@/game/themes';
 import { tr } from '@/i18n/tr';
 import { formatNumber } from '@/lib/format';
 import { haptic } from '@/lib/haptics';
@@ -15,45 +17,77 @@ import {
   IconButton,
   radius,
   Screen,
+  SegmentedControl,
   Sheet,
   space,
   Text,
   useColors,
 } from '@/ui';
 
+type Tab = 'toplar' | 'temalar';
+
 /**
- * The capsule machine and the collection.
+ * The shop: two separate economies under one roof.
  *
- * The odds are printed on the page, not buried: Play requires disclosure for
- * anything of this shape, and a machine that hides its rates has something to
- * hide. Since gold cannot be bought, saying so costs nothing and earns the
- * benefit of the doubt.
+ * Toplar is still the capsule/gacha machine — chance, pity, duplicates, the
+ * odds printed on the page. Temalar is the opposite on purpose: a flat price,
+ * bought outright, no luck involved — a guaranteed way to personalise the
+ * board for a player who would rather not gamble for it.
  */
-export default function CapsuleScreen() {
+export default function StoreScreen() {
   const router = useRouter();
   const colors = useColors();
+  const [tab, setTab] = useState<Tab>('toplar');
 
   const progress = useGame((s) => s.progress);
   const buyCapsule = useGame((s) => s.buyCapsule);
   const selectBall = useGame((s) => s.selectBall);
   const lastPull = useGame((s) => s.lastPull);
   const clearPull = useGame((s) => s.clearPull);
+  const buyTheme = useGame((s) => s.buyTheme);
+  const selectTheme = useGame((s) => s.selectTheme);
 
   const affordable = progress.gold >= CAPSULE_COST;
   const owned = new Set(progress.owned);
+
+  // A short "spin" before the real result shows — cycling through random
+  // ball colours — so a pull reads as a reveal, not a lookup. The result
+  // itself is already decided (it lives in `lastPull` the instant the
+  // capsule is bought); this only delays SHOWING it, purely for the moment.
+  const [spinning, setSpinning] = useState(false);
+  const [spinColor, setSpinColor] = useState(BALLS[0]!.color);
+
+  useEffect(() => {
+    if (lastPull === null) return;
+    setSpinning(true);
+    let tick = 0;
+    const id = setInterval(() => {
+      tick += 1;
+      setSpinColor(BALLS[Math.floor(Math.random() * BALLS.length)]!.color);
+      if (tick >= 8) {
+        clearInterval(id);
+        setSpinning(false);
+        haptic[lastPull.duplicate ? 'select' : 'success']();
+      }
+    }, 80);
+    return () => clearInterval(id);
+    // Only the identity of a NEW pull should restart the spin.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lastPull?.ball.id, lastPull?.duplicate, lastPull === null]);
 
   return (
     <Screen
       scroll
       footer={
-        <Button
-          label={`${tr.capsule.open} · ${tr.capsule.cost.replace('{cost}', String(CAPSULE_COST))}`}
-          disabled={!affordable}
-          onPress={async () => {
-            const pull = await buyCapsule();
-            if (pull) haptic.success();
-          }}
-        />
+        tab === 'toplar' ? (
+          <Button
+            label={`${tr.capsule.open} · ${tr.capsule.cost.replace('{cost}', String(CAPSULE_COST))}`}
+            disabled={!affordable}
+            onPress={async () => {
+              await buyCapsule();
+            }}
+          />
+        ) : undefined
       }>
       <View style={{ gap: space.xl }}>
         <View style={{ gap: space.xs }}>
@@ -61,120 +95,297 @@ export default function CapsuleScreen() {
             <IconButton accessibilityLabel={tr.common.back} tinted onPress={() => router.back()}>
               <Text variant="heading">‹</Text>
             </IconButton>
-            <Text variant="title">{tr.capsule.title}</Text>
+            <Text variant="title">{tr.game.store}</Text>
           </View>
           <Text variant="body" color="textMuted">
             {tr.game.gold}: {formatNumber(progress.gold)}
           </Text>
-          {affordable ? null : (
-            <Text variant="caption" color="textMuted">
-              {tr.capsule.notEnough}
-            </Text>
-          )}
         </View>
 
-        <Card>
-          <View style={{ gap: space.sm }}>
-            <Text variant="heading">{tr.capsule.odds}</Text>
-            {RARITY_ORDER.map((rarity) => (
-              <View key={rarity} style={{ flexDirection: 'row', gap: space.md }}>
-                <Text variant="body" color="textMuted" style={{ flex: 1 }}>
-                  {tr.capsule.rarity[rarity]}
-                </Text>
-                <Text variant="body">%{(RARITY_ODDS[rarity] * 100).toFixed(1)}</Text>
-              </View>
-            ))}
-            <Text variant="caption" color="textMuted">
-              {tr.capsule.oddsBody}
-            </Text>
-            <Text variant="caption" color="textMuted">
-              {tr.capsule.pityBody
-                .replace('{soft}', String(SOFT_PITY))
-                .replace('{hard}', String(HARD_PITY))}
-            </Text>
-          </View>
-        </Card>
+        <SegmentedControl
+          accessibilityLabel={tr.game.store}
+          segments={[
+            { value: 'toplar', label: tr.capsule.tabBalls },
+            { value: 'temalar', label: tr.capsule.tabThemes },
+          ]}
+          value={tab}
+          onChange={setTab}
+        />
 
-        <View style={{ gap: space.md }}>
-          <Text variant="heading">
-            {tr.capsule.collection} ·{' '}
-            {tr.capsule.owned
-              .replace('{owned}', String(owned.size))
-              .replace('{total}', String(BALLS.length))}
-          </Text>
-
-          <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.md }}>
-            {BALLS.map((ball) => {
-              const have = owned.has(ball.id);
-              const active = progress.selected === ball.id;
-
-              return (
-                <Card
-                  key={ball.id}
-                  style={{
-                    width: '47%',
-                    borderColor: active ? colors.accent : colors.border,
-                    borderWidth: active ? 2 : 1,
-                  }}>
-                  <View style={{ gap: space.sm, alignItems: 'center' }}>
-                    <View
-                      style={{
-                        width: 44,
-                        height: 44,
-                        borderRadius: radius.pill,
-                        backgroundColor: have ? ball.color : colors.surfaceAlt,
-                        borderWidth: have ? 0 : 1,
-                        borderColor: colors.border,
-                      }}
-                    />
-                    <Text variant="label">{have ? ball.name : tr.capsule.locked}</Text>
-                    <Text variant="caption" color="textMuted">
-                      {tr.capsule.rarity[ball.rarity as Rarity]}
-                    </Text>
-                    {have ? (
-                      <Button
-                        label={active ? tr.capsule.selected : tr.capsule.select}
-                        variant={active ? 'ghost' : 'secondary'}
-                        disabled={active}
-                        onPress={() => void selectBall(ball.id)}
-                      />
-                    ) : null}
-                  </View>
-                </Card>
-              );
-            })}
-          </View>
-        </View>
+        {tab === 'toplar' ? (
+          <BallsTab affordable={affordable} owned={owned} selected={progress.selected} onSelect={selectBall} />
+        ) : (
+          <ThemesTab
+            gold={progress.gold}
+            ownedThemes={new Set(progress.ownedThemes)}
+            selected={progress.boardTheme}
+            onBuy={buyTheme}
+            onSelect={selectTheme}
+          />
+        )}
       </View>
 
       <Sheet visible={lastPull !== null} onClose={clearPull} title={tr.capsule.title}>
         {lastPull === null ? null : (
           <View style={{ gap: space.lg, alignItems: 'center' }}>
-            {lastPull.duplicate ? null : <Confetti play />}
+            {spinning ? (
+              <>
+                <View
+                  style={{
+                    width: 88,
+                    height: 88,
+                    borderRadius: radius.pill,
+                    backgroundColor: spinColor,
+                  }}
+                />
+                <Text variant="body" color="textMuted">
+                  …
+                </Text>
+              </>
+            ) : (
+              <>
+                {lastPull.duplicate ? null : <Confetti play />}
 
-            <View
-              style={{
-                width: 88,
-                height: 88,
-                borderRadius: radius.pill,
-                backgroundColor: lastPull.ball.color,
-              }}
-            />
-            <Text variant="title">{lastPull.ball.name}</Text>
-            <Text variant="body" color="textMuted">
-              {tr.capsule.rarity[lastPull.ball.rarity]}
-            </Text>
+                <View
+                  style={{
+                    width: 88,
+                    height: 88,
+                    borderRadius: radius.pill,
+                    backgroundColor: lastPull.ball.color,
+                    borderWidth: 3,
+                    borderColor: colors.accent,
+                  }}
+                />
+                <Text variant="title">{lastPull.ball.name}</Text>
+                <Text variant="body" color="textMuted">
+                  {tr.capsule.rarity[lastPull.ball.rarity]}
+                </Text>
 
-            <Text variant="body" color={lastPull.duplicate ? 'textMuted' : 'accent'}>
-              {lastPull.duplicate
-                ? tr.capsule.duplicate.replace('{refund}', String(lastPull.refund))
-                : tr.capsule.isNew}
-            </Text>
+                <PowerLines power={lastPull.ball.power} />
 
-            <Button label={tr.common.done} onPress={clearPull} />
+                <Text variant="body" color={lastPull.duplicate ? 'textMuted' : 'accent'}>
+                  {lastPull.duplicate
+                    ? tr.capsule.duplicate.replace('{refund}', String(lastPull.refund))
+                    : tr.capsule.isNew}
+                </Text>
+
+                <Button label={tr.common.done} onPress={clearPull} />
+              </>
+            )}
           </View>
         )}
       </Sheet>
     </Screen>
+  );
+}
+
+function BallsTab({
+  affordable,
+  owned,
+  selected,
+  onSelect,
+}: {
+  affordable: boolean;
+  owned: Set<string>;
+  selected: string;
+  onSelect: (id: string) => void;
+}) {
+  const colors = useColors();
+
+  return (
+    <View style={{ gap: space.xl }}>
+      {affordable ? null : (
+        <Text variant="caption" color="textMuted">
+          {tr.capsule.notEnough}
+        </Text>
+      )}
+
+      <Card>
+        <View style={{ gap: space.sm }}>
+          <Text variant="heading">{tr.capsule.odds}</Text>
+          {RARITY_ORDER.map((rarity) => (
+            <View key={rarity} style={{ flexDirection: 'row', gap: space.md }}>
+              <Text variant="body" color="textMuted" style={{ flex: 1 }}>
+                {tr.capsule.rarity[rarity]}
+              </Text>
+              <Text variant="body">%{(RARITY_ODDS[rarity] * 100).toFixed(1)}</Text>
+            </View>
+          ))}
+          <Text variant="caption" color="textMuted">
+            {tr.capsule.oddsBody}
+          </Text>
+          <Text variant="caption" color="textMuted">
+            {tr.capsule.pityBody.replace('{soft}', String(SOFT_PITY)).replace('{hard}', String(HARD_PITY))}
+          </Text>
+        </View>
+      </Card>
+
+      <View style={{ gap: space.md }}>
+        <Text variant="heading">
+          {tr.capsule.collection} ·{' '}
+          {tr.capsule.owned.replace('{owned}', String(owned.size)).replace('{total}', String(BALLS.length))}
+        </Text>
+
+        <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.md }}>
+          {BALLS.map((ball) => {
+            const have = owned.has(ball.id);
+            const active = selected === ball.id;
+            const lines = have ? describePower(ball.power) : [];
+
+            return (
+              <Card
+                key={ball.id}
+                style={{
+                  width: '47%',
+                  borderColor: active ? colors.accent : colors.border,
+                  borderWidth: active ? 2 : 1,
+                }}>
+                <View style={{ gap: space.sm, alignItems: 'center' }}>
+                  <View
+                    style={{
+                      width: 44,
+                      height: 44,
+                      borderRadius: radius.pill,
+                      backgroundColor: have ? ball.color : colors.surfaceAlt,
+                      borderWidth: have ? 0 : 1,
+                      borderColor: colors.border,
+                    }}
+                  />
+                  <Text variant="label">{have ? ball.name : tr.capsule.locked}</Text>
+                  <Text variant="caption" color="textMuted">
+                    {tr.capsule.rarity[ball.rarity as Rarity]}
+                  </Text>
+                  {lines.length > 0 ? (
+                    <View style={{ gap: 2, alignItems: 'center' }}>
+                      {lines.map((line) => (
+                        <Text key={line.key} variant="caption" color="accent">
+                          {tr.capsule.power[line.key].replace('{n}', String(line.value))}
+                        </Text>
+                      ))}
+                    </View>
+                  ) : have ? (
+                    <Text variant="caption" color="textMuted">
+                      {tr.capsule.power.none}
+                    </Text>
+                  ) : null}
+                  {have ? (
+                    <Button
+                      label={active ? tr.capsule.selected : tr.capsule.select}
+                      variant={active ? 'ghost' : 'secondary'}
+                      disabled={active}
+                      onPress={() => onSelect(ball.id)}
+                    />
+                  ) : null}
+                </View>
+              </Card>
+            );
+          })}
+        </View>
+      </View>
+    </View>
+  );
+}
+
+function ThemesTab({
+  gold,
+  ownedThemes,
+  selected,
+  onBuy,
+  onSelect,
+}: {
+  gold: number;
+  ownedThemes: Set<string>;
+  selected: string;
+  onBuy: (id: string) => Promise<boolean>;
+  onSelect: (id: string) => Promise<void>;
+}) {
+  const colors = useColors();
+
+  return (
+    <View style={{ gap: space.md }}>
+      <Text variant="heading">
+        {tr.theme.title} · {tr.theme.owned.replace('{owned}', String(ownedThemes.size)).replace('{total}', String(BOARD_THEMES.length))}
+      </Text>
+      <Text variant="caption" color="textMuted">
+        {tr.theme.hint}
+      </Text>
+
+      <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: space.md }}>
+        {BOARD_THEMES.map((boardTheme) => {
+          const have = ownedThemes.has(boardTheme.id);
+          const active = selected === boardTheme.id;
+          const swatch = boardTheme.palette?.[0] ?? boardTheme.accent ?? colors.accent;
+          const afford = gold >= boardTheme.price;
+
+          return (
+            <Card
+              key={boardTheme.id}
+              style={{
+                width: '47%',
+                borderColor: active ? colors.accent : colors.border,
+                borderWidth: active ? 2 : 1,
+              }}>
+              <View style={{ gap: space.sm, alignItems: 'center' }}>
+                <View
+                  style={{
+                    width: 44,
+                    height: 44,
+                    borderRadius: radius.md,
+                    backgroundColor: boardTheme.style === 'filled' ? swatch : 'transparent',
+                    borderWidth: boardTheme.style === 'outline' ? 2 : 0,
+                    borderColor: swatch,
+                  }}
+                />
+                <Text variant="label">{boardTheme.name}</Text>
+                <Text variant="caption" color="textMuted">
+                  {boardTheme.price === 0 ? tr.theme.free : tr.theme.price.replace('{price}', String(boardTheme.price))}
+                </Text>
+
+                {have ? (
+                  <Button
+                    label={active ? tr.theme.selected : tr.theme.select}
+                    variant={active ? 'ghost' : 'secondary'}
+                    disabled={active}
+                    onPress={() => void onSelect(boardTheme.id)}
+                  />
+                ) : (
+                  <Button
+                    label={tr.theme.buy}
+                    variant="secondary"
+                    disabled={!afford}
+                    onPress={() => void onBuy(boardTheme.id)}
+                  />
+                )}
+                {!have && !afford ? (
+                  <Text variant="caption" color="textMuted">
+                    {tr.theme.notEnough}
+                  </Text>
+                ) : null}
+              </View>
+            </Card>
+          );
+        })}
+      </View>
+    </View>
+  );
+}
+
+function PowerLines({ power }: { power: BallPower | undefined }) {
+  const lines = describePower(power);
+  if (lines.length === 0) {
+    return (
+      <Text variant="caption" color="textMuted">
+        {tr.capsule.power.none}
+      </Text>
+    );
+  }
+  return (
+    <View style={{ gap: 2, alignItems: 'center' }}>
+      {lines.map((line) => (
+        <Text key={line.key} variant="caption" color="accent">
+          {tr.capsule.power[line.key].replace('{n}', String(line.value))}
+        </Text>
+      ))}
+    </View>
   );
 }

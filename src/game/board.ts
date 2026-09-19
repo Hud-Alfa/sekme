@@ -1,13 +1,14 @@
 import {
-  BALL_PICKUP_CHANCE,
   COLUMNS,
   HP_SPREAD,
   ROWS,
   ballAmount,
+  ballPickupChance,
   baseHp,
   cellsPerRow,
   goldAmount,
   goldChance,
+  type Difficulty,
 } from '@/game/curve';
 
 /**
@@ -38,7 +39,7 @@ function pick(random: Random, min: number, max: number): number {
 }
 
 /** A freshly spawned row for the given turn. */
-export function spawnRow(turn: number, random: Random): Cell[] {
+export function spawnRow(turn: number, random: Random, difficulty: Difficulty): Cell[] {
   const row: Cell[] = Array.from({ length: COLUMNS }, () => EMPTY);
 
   const { min, max } = cellsPerRow(turn);
@@ -54,7 +55,7 @@ export function spawnRow(turn: number, random: Random): Cell[] {
   }
 
   const chosen = columns.slice(0, count);
-  const base = baseHp(turn);
+  const base = baseHp(turn, difficulty);
 
   for (const column of chosen) {
     const spread = HP_SPREAD.min + random() * (HP_SPREAD.max - HP_SPREAD.min);
@@ -65,7 +66,7 @@ export function spawnRow(turn: number, random: Random): Cell[] {
   // One pickup, in a cell the blocks did not take. Without a steady supply of
   // balls the run stalls; with too many it plays itself.
   const free = columns.slice(count);
-  if (free.length > 0 && random() < BALL_PICKUP_CHANCE) {
+  if (free.length > 0 && random() < ballPickupChance(difficulty)) {
     row[free[0]!] = { kind: 'ball', amount: ballAmount(turn) };
   }
 
@@ -82,11 +83,16 @@ export function spawnRow(turn: number, random: Random): Cell[] {
  * Returns `overflow` when something was pushed past the bottom row — that is
  * the losing condition, decided here rather than by the screen.
  */
-export function descend(board: Board, turn: number, random: Random): { board: Board; overflow: boolean } {
+export function descend(
+  board: Board,
+  turn: number,
+  random: Random,
+  difficulty: Difficulty,
+): { board: Board; overflow: boolean } {
   const last = board[board.length - 1] ?? [];
   const overflow = last.some((cell) => cell.kind === 'block');
 
-  const next: Board = [spawnRow(turn, random), ...board.slice(0, ROWS - 1)];
+  const next: Board = [spawnRow(turn, random, difficulty), ...board.slice(0, ROWS - 1)];
 
   return { board: next, overflow };
 }

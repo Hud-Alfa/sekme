@@ -153,20 +153,23 @@ console.log('\nthe difficulty curve rises without a cliff');
   let previous = 0;
   let biggestJump = 0;
   for (let turn = 1; turn <= 120; turn++) {
-    const hp = baseHp(turn);
+    const hp = baseHp(turn, 'orta');
     eq(`turn ${turn} never goes backwards`, hp >= previous, true);
     biggestJump = Math.max(biggestJump, hp - previous);
     previous = hp;
   }
   eq('and never leaps by more than 4 in one turn', biggestJump <= 4, true);
-  eq('turn 1 is gentle', baseHp(1) <= 3, true);
-  eq('turn 50 is a wall', baseHp(50) > 100, true);
+  eq('turn 1 is gentle', baseHp(1, 'orta') <= 3, true);
+  eq('turn 50 is a wall', baseHp(50, 'orta') > 100, true);
+
+  eq('kolay is softer than orta at the same turn', baseHp(50, 'kolay') < baseHp(50, 'orta'), true);
+  eq('zor is harder than orta at the same turn', baseHp(50, 'zor') > baseHp(50, 'orta'), true);
 }
 
 console.log('\nspawned rows');
 {
   const random = seededRandom(42);
-  const row = spawnRow(10, random);
+  const row = spawnRow(10, random, 'orta');
   eq('the row is board width', row.length, COLUMNS);
   eq('it has blocks', row.some((c) => c.kind === 'block'), true);
   eq('but is not full', row.some((c) => c.kind === 'empty'), true);
@@ -181,14 +184,14 @@ console.log('\ndescending');
 {
   const random = seededRandom(7);
   let board = emptyBoard();
-  ({ board } = descend(board, 1, random));
+  ({ board } = descend(board, 1, random, 'orta'));
   eq('a row arrived at the top', board[0]?.some((c) => c.kind === 'block'), true);
   eq('the board keeps its height', board.length, ROWS);
 
   // Push a block to the floor and the game must end.
   let overflow = false;
   for (let turn = 2; turn < 40 && !overflow; turn++) {
-    ({ board, overflow } = descend(board, turn, random));
+    ({ board, overflow } = descend(board, turn, random, 'orta'));
   }
   eq('eventually something reaches the bottom', overflow, true);
 }
@@ -196,7 +199,7 @@ console.log('\ndescending');
 console.log('\ndamage');
 {
   const random = seededRandom(3);
-  const board = [spawnRow(5, random), ...emptyBoard().slice(1)];
+  const board = [spawnRow(5, random, 'orta'), ...emptyBoard().slice(1)];
   const column = board[0]!.findIndex((c) => c.kind === 'block');
   const cell = board[0]![column]!;
   const hp = cell.kind === 'block' ? cell.hp : 0;

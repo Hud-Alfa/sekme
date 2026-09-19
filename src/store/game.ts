@@ -2,9 +2,10 @@ import { create } from 'zustand';
 
 import * as repo from '@/db/progress';
 import { EMPTY_PROGRESS, type Progress } from '@/db/progress';
-import { CAPSULE_COST } from '@/game/curve';
+import { CAPSULE_COST, DEFAULT_DIFFICULTY, type Difficulty } from '@/game/curve';
 import { initialState, reduce, seededRandom, type GameState, type TurnResult } from '@/game/engine';
 import { openCapsule, type Pull } from '@/game/gacha';
+import { findBoardTheme } from '@/game/themes';
 
 /**
  * Persistence and sequencing. Every rule — what spawns, what breaks, what a
@@ -19,12 +20,15 @@ type Store = {
   lastPull: Pull | null;
 
   load: () => Promise<void>;
-  newGame: () => Promise<void>;
+  newGame: (difficulty?: Difficulty) => Promise<void>;
   resolveTurn: (result: TurnResult) => Promise<void>;
 
   buyCapsule: () => Promise<Pull | null>;
   selectBall: (id: string) => Promise<void>;
   clearPull: () => void;
+
+  buyTheme: (id: string) => Promise<boolean>;
+  selectTheme: (id: string) => Promise<void>;
 };
 
 /**
@@ -47,8 +51,8 @@ export const useGame = create<Store>((set, get) => ({
     set({ ready: true, progress, game: run });
   },
 
-  newGame: async () => {
-    const game = initialState(freshRandom());
+  newGame: async (difficulty = DEFAULT_DIFFICULTY) => {
+    const game = initialState(freshRandom(), difficulty);
     set({ game });
     await repo.saveRun(game);
   },
@@ -66,12 +70,16 @@ export const useGame = create<Store>((set, get) => ({
       return;
     }
 
-    // The run is over: bank the gold, keep the best score, drop the save.
+    // The run is over: bank the gold, keep the best score for THIS run's
+    // difficulty (the other two are untouched), and drop the save.
     const progress = get().progress;
     const banked: Progress = {
       ...progress,
       gold: progress.gold + next.gold,
-      highScore: Math.max(progress.highScore, next.turn),
+      highScores: {
+        ...progress.highScores,
+        [next.difficulty]: Math.max(progress.highScores[next.difficulty], next.turn),
+      },
     };
 
     set({ progress: banked });
@@ -110,4 +118,31 @@ export const useGame = create<Store>((set, get) => ({
   },
 
   clearPull: () => set({ lastPull: null }),
+
+  buyTheme: async (id) => {
+    const progress = get().progress;
+    if (progress.ownedThemes.includes(id)) return true;
+
+    const theme = findBoardTheme(id);
+    if (progress.gold < theme.price) return false;
+
+    const next: Progress = {
+      ...progress,
+      gold: progress.gold - theme.price,
+      ownedThemes: [...progress.ownedThemes, theme.id],
+      boardTheme: theme.id,
+    };
+    set({ progress: next });
+    await repo.saveProgress(next);
+    return true;
+  },
+
+  selectTheme: async (id) => {
+    const progress = get().progress;
+    if (!progress.ownedThemes.includes(id)) return;
+
+    const next = { ...progress, boardTheme: id };
+    set({ progress: next });
+    await repo.saveProgress(next);
+  },
 }));

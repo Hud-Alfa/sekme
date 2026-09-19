@@ -1,27 +1,35 @@
 import { getDb } from '@/db';
 import { DEFAULT_BALL } from '@/game/balls';
+import type { Difficulty } from '@/game/curve';
 import type { GameState } from '@/game/engine';
 import type { Pity } from '@/game/gacha';
+import { DEFAULT_BOARD_THEME } from '@/game/themes';
 
 /**
- * What survives between launches: the collection, the purse, the best score,
- * and the run in progress.
+ * What survives between launches: the collection, the purse, the best score
+ * per difficulty, the owned themes, and the run in progress.
  */
 
 export type Progress = {
-  highScore: number;
+  /** One record per difficulty — a `zor` run and a `kolay` run are not the
+   * same accomplishment, so they do not share a single number. */
+  highScores: Record<Difficulty, number>;
   gold: number;
   owned: string[];
   selected: string;
   pity: Pity;
+  ownedThemes: string[];
+  boardTheme: string;
 };
 
 export const EMPTY_PROGRESS: Progress = {
-  highScore: 0,
+  highScores: { kolay: 0, orta: 0, zor: 0 },
   gold: 0,
   owned: [DEFAULT_BALL],
   selected: DEFAULT_BALL,
   pity: { sinceEpic: 0, sinceLegendary: 0 },
+  ownedThemes: [DEFAULT_BOARD_THEME],
+  boardTheme: DEFAULT_BOARD_THEME,
 };
 
 async function read(key: string): Promise<string | null> {
@@ -44,16 +52,30 @@ export async function loadProgress(): Promise<Progress> {
   if (raw === null) return EMPTY_PROGRESS;
 
   try {
-    const parsed = JSON.parse(raw) as Partial<Progress>;
+    // Before difficulty existed, this was one flat `highScore: number`. Carry
+    // it forward as the `orta` record rather than dropping it — someone's
+    // best run should not silently reset to zero because the shape changed.
+    const parsed = JSON.parse(raw) as Partial<Progress> & { highScore?: number };
+    const highScores =
+      parsed.highScores ??
+      (typeof parsed.highScore === 'number'
+        ? { ...EMPTY_PROGRESS.highScores, orta: parsed.highScore }
+        : EMPTY_PROGRESS.highScores);
+
     return {
       ...EMPTY_PROGRESS,
       ...parsed,
+      highScores,
       // A corrupt or half-written blob must not cost someone their collection,
       // and it must never leave them with no ball at all.
       owned:
         Array.isArray(parsed.owned) && parsed.owned.length > 0
           ? parsed.owned
           : EMPTY_PROGRESS.owned,
+      ownedThemes:
+        Array.isArray(parsed.ownedThemes) && parsed.ownedThemes.length > 0
+          ? parsed.ownedThemes
+          : EMPTY_PROGRESS.ownedThemes,
     };
   } catch {
     return EMPTY_PROGRESS;
