@@ -32,13 +32,22 @@ const config: ExpoConfig = {
     predictiveBackGestureEnabled: false,
     // Only what the app actually uses. Unused permissions cost review time and
     // make the Data Safety form harder to answer honestly.
-    permissions: ['POST_NOTIFICATIONS'],
+    // The game sends no notifications — that section was removed from Settings
+    // and `expo-notifications` with it.
+    permissions: [],
     blockedPermissions: [
       // React Native's template asks for this so the dev menu can float over
       // other apps. Nothing in a release build uses it, and Play treats
       // "draw over other apps" as sensitive, so it is stripped.
       'android.permission.SYSTEM_ALERT_WINDOW',
       'android.permission.RECORD_AUDIO',
+      // expo-audio declares these so an app CAN keep playing in the
+      // background. This one deliberately does not (`shouldPlayInBackground:
+      // false`), and a foreground-service permission is something Play makes
+      // you justify in review — so it is stripped rather than explained.
+      'android.permission.FOREGROUND_SERVICE',
+      'android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK',
+      'android.permission.POST_NOTIFICATIONS',
       'android.permission.ACCESS_FINE_LOCATION',
       'android.permission.ACCESS_COARSE_LOCATION',
       'android.permission.READ_EXTERNAL_STORAGE',
@@ -49,19 +58,29 @@ const config: ExpoConfig = {
   plugins: [
     'expo-router',
     'expo-sqlite',
-    'expo-sharing',
+    'expo-audio',
+    [
+      // Shrinking is configured here rather than in `android/gradle.properties`
+      // because `android/` is generated — a value written there is lost on the
+      // next prebuild, and would never reach an EAS build at all.
+      //
+      // R8 plus resource shrinking is most of the difference between a ~50 MB
+      // and a ~25 MB install: without it the release APK ships five uncompiled
+      // dex files and every resource any dependency happens to contain.
+      'expo-build-properties',
+      {
+        android: {
+          enableProguardInReleaseBuilds: true,
+          enableShrinkResourcesInReleaseBuilds: true,
+        },
+      },
+    ],
     [
       'expo-splash-screen',
       {
         backgroundColor: '#0B0B0F',
         image: './assets/images/splash-icon.png',
         imageWidth: 120,
-      },
-    ],
-    [
-      'expo-notifications',
-      {
-        color: '#0C8049',
       },
     ],
   ],

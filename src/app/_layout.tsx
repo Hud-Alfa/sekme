@@ -14,6 +14,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { getDb } from '@/db';
+import { initAudio } from '@/lib/audio';
 import { ThemeProvider, useColors, useTheme } from '@/ui';
 
 SplashScreen.preventAutoHideAsync();
@@ -32,6 +33,9 @@ export default function RootLayout() {
     getDb().catch(() => {
       // Surfaced on first read instead; a failure here must not block launch.
     });
+    // Same reasoning for sound: loading a clip on the first bounce would drop
+    // that bounce. A failure here just means a silent game, never a broken one.
+    initAudio().catch(() => {});
   }, []);
 
   useEffect(() => {

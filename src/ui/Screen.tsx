@@ -16,6 +16,9 @@ type ScreenProps = {
   /** Pinned to the bottom, outside the scroll area. Use for the primary action. */
   footer?: ReactNode;
   style?: ViewStyle;
+  /** Full-bleed scenery drawn under everything (safe areas included). The
+   * footer turns transparent over it so the scene runs edge to edge. */
+  backdrop?: ReactNode;
 };
 
 /**
@@ -25,7 +28,7 @@ type ScreenProps = {
  * Screens should not be built outside this component. One that is must apply
  * `maxWidth` and centring itself — see the `duyarli-tasarim` skill.
  */
-export function Screen({ children, scroll = false, bleed = false, footer, style }: ScreenProps) {
+export function Screen({ children, scroll = false, bleed = false, footer, style, backdrop }: ScreenProps) {
   const colors = useColors();
   const insets = useSafeAreaInsets();
   const { content } = useScreen();
@@ -53,6 +56,7 @@ export function Screen({ children, scroll = false, bleed = false, footer, style 
 
   return (
     <View style={{ flex: 1, backgroundColor: colors.bg }}>
+      {backdrop}
       {scroll ? (
         <ScrollView
           style={{ flex: 1 }}
@@ -70,9 +74,9 @@ export function Screen({ children, scroll = false, bleed = false, footer, style 
           style={{
             paddingTop: space.md,
             paddingBottom: insets.bottom + space.md,
-            borderTopWidth: 1,
+            borderTopWidth: backdrop ? 0 : 1,
             borderTopColor: colors.border,
-            backgroundColor: colors.bg,
+            backgroundColor: backdrop ? 'transparent' : colors.bg,
           }}>
           <View style={[column, { paddingHorizontal: space.lg }]}>{footer}</View>
         </View>

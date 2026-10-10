@@ -103,26 +103,79 @@ export function hitAxis(centre: Vec, radius: number, box: Rect): Axis {
 }
 
 /**
+ * `hitAxis` without the objects: the same answer (0 none, 1 'x', 2 'y') for a
+ * square cell at (bx, by) of side `size`, taking and returning plain numbers.
+ *
+ * The frame loop calls this for every ball × every nearby cell × every
+ * sub-step — thousands of times a frame with forty balls out. Allocating a
+ * centre and a box object for each call was the bulk of the garbage the UI
+ * thread had to collect mid-shot; `hitAxis` stays for everything else and
+ * the tests pin the two to the same answers.
+ */
+export function hitAxisXY(cx: number, cy: number, radius: number, bx: number, by: number, size: number): 0 | 1 | 2 {
+  'worklet';
+  const nearestX = cx < bx ? bx : cx > bx + size ? bx + size : cx;
+  const nearestY = cy < by ? by : cy > by + size ? by + size : cy;
+  const dx = cx - nearestX;
+  const dy = cy - nearestY;
+  if (dx * dx + dy * dy > radius * radius) return 0;
+  if (dx === 0 && dy === 0) {
+    const horizontal = Math.min(cx - bx, bx + size - cx);
+    const vertical = Math.min(cy - by, by + size - cy);
+    return horizontal < vertical ? 1 : 2;
+  }
+  return Math.abs(dx) > Math.abs(dy) ? 1 : 2;
+}
+
+/**
  * The four ways a right-triangle block can sit in a cell — named for which
- * corner is solid ground; the other three corners are open. The triangle's
- * two legs run along the cell's own edges (indistinguishable from a square
- * block there, so nothing extra is needed); the only new surface is the
- * diagonal hypotenuse, which is what `hitTriangle` checks.
+ * corner is solid ground; the other three corners are open. Two of the
+ * triangle's sides are legs lying along the cell's own edges; the third is
+ * the diagonal hypotenuse. All three are solid and all three are checked.
  */
 export type TriangleCorner = 1 | 2 | 3 | 4; // top-left, top-right, bottom-left, bottom-right
 
 export type TriangleHit = { normal: Vec; distance: number };
 
+/** The three corners of the solid half, in cell-local coordinates. */
+function triangleCorners(corner: TriangleCorner, s: number): Vec[] {
+  'worklet';
+  if (corner === 1) return [{ x: 0, y: 0 }, { x: s, y: 0 }, { x: 0, y: s }];
+  if (corner === 2) return [{ x: 0, y: 0 }, { x: s, y: 0 }, { x: s, y: s }];
+  if (corner === 3) return [{ x: 0, y: 0 }, { x: 0, y: s }, { x: s, y: s }];
+  return [{ x: s, y: 0 }, { x: 0, y: s }, { x: s, y: s }];
+}
+
+/** The point on segment a→b nearest to p. */
+function nearestOnSegment(p: Vec, a: Vec, b: Vec): Vec {
+  'worklet';
+  const abx = b.x - a.x;
+  const aby = b.y - a.y;
+  const lengthSquared = abx * abx + aby * aby;
+  if (lengthSquared === 0) return a;
+  let t = ((p.x - a.x) * abx + (p.y - a.y) * aby) / lengthSquared;
+  t = t < 0 ? 0 : t > 1 ? 1 : t;
+  return { x: a.x + abx * t, y: a.y + aby * t };
+}
+
 /**
- * Circle-vs-diagonal collision. `distance` is the signed perpendicular
- * distance from the circle's centre to the hypotenuse LINE (not the
- * segment) — negative means the centre has already crossed into the solid
- * corner, which sub-stepping should prevent but which is still handled the
- * same way as a shallow touch: bounce it back out.
+ * Circle-vs-triangle collision, against the whole solid shape.
  *
- * The four normals were derived once, by hand, from which half-plane of each
- * diagonal is solid — `npm test` pins them so a future edit here cannot
- * silently flip a triangle's bounce direction.
+ * This used to measure the perpendicular distance to the hypotenuse LINE and
+ * nothing else, on the reasoning that a triangle's two legs sit on the cell's
+ * edges and so "behave like a square block's faces". They do not: nothing
+ * else ever checked them, so a ball arriving at a leg from outside the cell
+ * passed straight through the block, and — because an infinite line has no
+ * ends — a ball well outside the cell entirely could still report a hit and
+ * bounce off nothing. Both were visible in play.
+ *
+ * Now the real shape decides: the nearest point on the triangle (its three
+ * SEGMENTS, plus the inside case) gives both the distance and the normal, so
+ * every solid side deflects and no empty space does.
+ *
+ * `distance` stays signed the same way as before — negative means the centre
+ * is already inside the solid corner, which sub-stepping should prevent but
+ * which is pushed back out the same way regardless.
  */
 export function hitTriangle(
   centre: Vec,
@@ -131,35 +184,64 @@ export function hitTriangle(
   corner: TriangleCorner,
 ): TriangleHit | null {
   'worklet';
-  const dx = centre.x - box.x;
-  const dy = centre.y - box.y;
   const s = box.width; // cells are always square — width === height
+  const p = { x: centre.x - box.x, y: centre.y - box.y };
 
-  let raw: number;
-  let normal: Vec;
-  if (corner === 1) {
-    // top-left solid (legs on the top and left edges); hypotenuse runs
-    // top-right to bottom-left.
-    raw = dx + dy - s;
-    normal = { x: Math.SQRT1_2, y: Math.SQRT1_2 };
-  } else if (corner === 4) {
-    // bottom-right solid; same diagonal as top-left, opposite side.
-    raw = s - dx - dy;
-    normal = { x: -Math.SQRT1_2, y: -Math.SQRT1_2 };
-  } else if (corner === 2) {
-    // top-right solid (legs on the top and right edges); hypotenuse runs
-    // top-left to bottom-right.
-    raw = dy - dx;
-    normal = { x: -Math.SQRT1_2, y: Math.SQRT1_2 };
-  } else {
-    // bottom-left solid; same diagonal as top-right, opposite side.
-    raw = dx - dy;
-    normal = { x: Math.SQRT1_2, y: -Math.SQRT1_2 };
+  // Cheap reject: the cell's bounding box, grown by the radius. An infinite
+  // line had no such bound, which is exactly how phantom hits got through.
+  if (p.x < -radius || p.y < -radius || p.x > s + radius || p.y > s + radius) return null;
+
+  const corners = triangleCorners(corner, s);
+  const a = corners[0]!;
+  const b = corners[1]!;
+  const c = corners[2]!;
+
+  // Inside test by edge sign. The corner lists above are wound consistently,
+  // so all three cross products share a sign for an interior point.
+  const d1 = (p.x - a.x) * (b.y - a.y) - (p.y - a.y) * (b.x - a.x);
+  const d2 = (p.x - b.x) * (c.y - b.y) - (p.y - b.y) * (c.x - b.x);
+  const d3 = (p.x - c.x) * (a.y - c.y) - (p.y - c.y) * (a.x - c.x);
+  const inside = (d1 <= 0 && d2 <= 0 && d3 <= 0) || (d1 >= 0 && d2 >= 0 && d3 >= 0);
+
+  let nearest = nearestOnSegment(p, a, b);
+  let best = (p.x - nearest.x) * (p.x - nearest.x) + (p.y - nearest.y) * (p.y - nearest.y);
+
+  const second = nearestOnSegment(p, b, c);
+  const secondDistance = (p.x - second.x) * (p.x - second.x) + (p.y - second.y) * (p.y - second.y);
+  if (secondDistance < best) {
+    best = secondDistance;
+    nearest = second;
   }
 
-  const distance = raw * Math.SQRT1_2;
-  if (distance > radius) return null;
-  return { normal, distance };
+  const third = nearestOnSegment(p, c, a);
+  const thirdDistance = (p.x - third.x) * (p.x - third.x) + (p.y - third.y) * (p.y - third.y);
+  if (thirdDistance < best) {
+    best = thirdDistance;
+    nearest = third;
+  }
+
+  const gap = Math.sqrt(best);
+  if (!inside && gap > radius) return null;
+
+  // Outward normal: from the surface toward the centre. Inside, that vector
+  // points the wrong way (the centre is behind the surface), so it flips.
+  let nx = p.x - nearest.x;
+  let ny = p.y - nearest.y;
+  if (gap > 0) {
+    nx /= gap;
+    ny /= gap;
+  } else {
+    // Dead on the edge: fall back to the direction away from the solid
+    // corner's centroid, which is never zero.
+    const cx = (a.x + b.x + c.x) / 3;
+    const cy = (a.y + b.y + c.y) / 3;
+    const length = Math.hypot(p.x - cx, p.y - cy) || 1;
+    nx = (p.x - cx) / length;
+    ny = (p.y - cy) / length;
+  }
+
+  if (inside) return { normal: { x: -nx, y: -ny }, distance: -gap };
+  return { normal: { x: nx, y: ny }, distance: gap };
 }
 
 /** Reflects a velocity off an arbitrary unit normal — the general mirror

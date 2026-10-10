@@ -4,13 +4,14 @@ import { useState } from 'react';
 import { Alert, Switch, View } from 'react-native';
 
 import { wipeDatabase } from '@/db';
+import { BackButton } from '@/components/space/BackButton';
+import { SpaceBackdrop } from '@/components/space/SpaceBackdrop';
 import { tr } from '@/i18n/tr';
 import { haptic } from '@/lib/haptics';
 import { useSettings, type ThemePreference } from '@/store/settings';
 import {
   Button,
   Card,
-  IconButton,
   ListRow,
   Screen,
   SegmentedControl,
@@ -50,12 +51,10 @@ export default function SettingsScreen() {
   }
 
   return (
-    <Screen scroll>
+    <Screen scroll backdrop={<SpaceBackdrop variant="calm" />}>
       <View style={{ gap: space.xl }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
-          <IconButton accessibilityLabel={tr.common.back} tinted onPress={() => router.back()}>
-            <Text variant="heading">‹</Text>
-          </IconButton>
+          <BackButton />
           <Text variant="title">{tr.settings.title}</Text>
         </View>
 

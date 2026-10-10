@@ -5,15 +5,21 @@ import { View } from 'react-native';
 import { BALLS, RARITY_ODDS, RARITY_ORDER, describePower, type BallPower, type Rarity } from '@/game/balls';
 import { CAPSULE_COST } from '@/game/curve';
 import { HARD_PITY, SOFT_PITY } from '@/game/gacha';
-import { BOARD_THEMES } from '@/game/themes';
+import { BOARD_THEMES, themeColorFor, type BoardTheme } from '@/game/themes';
 import { tr } from '@/i18n/tr';
 import { formatNumber } from '@/lib/format';
 import { haptic } from '@/lib/haptics';
 import { useGame } from '@/store/game';
+import { CapsuleMachine } from '@/components/space/CapsuleMachine';
+import { glassOf } from '@/components/space/cosmos';
+import { BackIcon, CoinIcon } from '@/components/space/Icons';
+import { Orb } from '@/components/space/Orb';
+import { SpaceBackdrop } from '@/components/space/SpaceBackdrop';
 import {
   Button,
   Card,
   Confetti,
+  HIT_SLOP_MIN,
   IconButton,
   radius,
   Screen,
@@ -22,6 +28,8 @@ import {
   space,
   Text,
   useColors,
+  useScreen,
+  useTheme,
 } from '@/ui';
 
 type Tab = 'toplar' | 'temalar';
@@ -37,6 +45,8 @@ type Tab = 'toplar' | 'temalar';
 export default function StoreScreen() {
   const router = useRouter();
   const colors = useColors();
+  const { scheme } = useTheme();
+  const { scale } = useScreen();
   const [tab, setTab] = useState<Tab>('toplar');
 
   const progress = useGame((s) => s.progress);
@@ -46,6 +56,7 @@ export default function StoreScreen() {
   const clearPull = useGame((s) => s.clearPull);
   const buyTheme = useGame((s) => s.buyTheme);
   const selectTheme = useGame((s) => s.selectTheme);
+  const debugUnlockAll = useGame((s) => s.debugUnlockAll);
 
   const affordable = progress.gold >= CAPSULE_COST;
   const owned = new Set(progress.owned);
@@ -78,6 +89,7 @@ export default function StoreScreen() {
   return (
     <Screen
       scroll
+      backdrop={<SpaceBackdrop variant="calm" />}
       footer={
         tab === 'toplar' ? (
           <Button
@@ -93,13 +105,34 @@ export default function StoreScreen() {
         <View style={{ gap: space.xs }}>
           <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
             <IconButton accessibilityLabel={tr.common.back} tinted onPress={() => router.back()}>
-              <Text variant="heading">‹</Text>
+              <BackIcon size={scale(22)} color={colors.text} />
             </IconButton>
-            <Text variant="title">{tr.game.store}</Text>
+            <Text variant="title" style={{ flex: 1 }}>
+              {tr.game.store}
+            </Text>
+            <View
+              accessible
+              accessibilityLabel={`${tr.game.gold}: ${formatNumber(progress.gold)}`}
+              style={{
+                flexDirection: 'row',
+                alignItems: 'center',
+                gap: space.sm,
+                minHeight: HIT_SLOP_MIN,
+                paddingHorizontal: space.md,
+                borderRadius: radius.pill,
+                borderWidth: 1,
+                borderColor: colors.border,
+                backgroundColor: glassOf(colors.surface, scheme),
+              }}>
+              <CoinIcon size={scale(18)} color={colors.warning} />
+              <Text variant="label" numeric>
+                {formatNumber(progress.gold)}
+              </Text>
+            </View>
           </View>
-          <Text variant="body" color="textMuted">
-            {tr.game.gold}: {formatNumber(progress.gold)}
-          </Text>
+          {/* TEMPORARY test button — remove along with debugUnlockAll once
+              testing is done. */}
+          <Button label="Test: hepsini aç" variant="ghost" onPress={() => void debugUnlockAll()} />
         </View>
 
         <SegmentedControl
@@ -130,14 +163,7 @@ export default function StoreScreen() {
           <View style={{ gap: space.lg, alignItems: 'center' }}>
             {spinning ? (
               <>
-                <View
-                  style={{
-                    width: 88,
-                    height: 88,
-                    borderRadius: radius.pill,
-                    backgroundColor: spinColor,
-                  }}
-                />
+                <Orb size={scale(88)} color={spinColor} glow />
                 <Text variant="body" color="textMuted">
                   …
                 </Text>
@@ -146,16 +172,7 @@ export default function StoreScreen() {
               <>
                 {lastPull.duplicate ? null : <Confetti play />}
 
-                <View
-                  style={{
-                    width: 88,
-                    height: 88,
-                    borderRadius: radius.pill,
-                    backgroundColor: lastPull.ball.color,
-                    borderWidth: 3,
-                    borderColor: colors.accent,
-                  }}
-                />
+                <Orb size={scale(88)} color={lastPull.ball.color} glow />
                 <Text variant="title">{lastPull.ball.name}</Text>
                 <Text variant="body" color="textMuted">
                   {tr.capsule.rarity[lastPull.ball.rarity]}
@@ -191,9 +208,14 @@ function BallsTab({
   onSelect: (id: string) => void;
 }) {
   const colors = useColors();
+  const { scale } = useScreen();
+  const { content } = useScreen();
 
   return (
     <View style={{ gap: space.xl }}>
+      <View style={{ alignItems: 'center' }}>
+        <CapsuleMachine width={content * 0.62} accent={colors.accent} />
+      </View>
       {affordable ? null : (
         <Text variant="caption" color="textMuted">
           {tr.capsule.notEnough}
@@ -241,16 +263,26 @@ function BallsTab({
                   borderWidth: active ? 2 : 1,
                 }}>
                 <View style={{ gap: space.sm, alignItems: 'center' }}>
-                  <View
-                    style={{
-                      width: 44,
-                      height: 44,
-                      borderRadius: radius.pill,
-                      backgroundColor: have ? ball.color : colors.surfaceAlt,
-                      borderWidth: have ? 0 : 1,
-                      borderColor: colors.border,
-                    }}
-                  />
+                  {have ? (
+                    <Orb size={scale(48)} color={ball.color} glow={active} />
+                  ) : (
+                    <View
+                      style={{
+                        width: scale(48),
+                        height: scale(48),
+                        borderRadius: radius.pill,
+                        backgroundColor: colors.surfaceAlt,
+                        borderWidth: 1,
+                        borderStyle: 'dashed',
+                        borderColor: colors.border,
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                      }}>
+                      <Text variant="heading" color="textMuted">
+                        ?
+                      </Text>
+                    </View>
+                  )}
                   <Text variant="label">{have ? ball.name : tr.capsule.locked}</Text>
                   <Text variant="caption" color="textMuted">
                     {tr.capsule.rarity[ball.rarity as Rarity]}
@@ -326,16 +358,7 @@ function ThemesTab({
                 borderWidth: active ? 2 : 1,
               }}>
               <View style={{ gap: space.sm, alignItems: 'center' }}>
-                <View
-                  style={{
-                    width: 44,
-                    height: 44,
-                    borderRadius: radius.md,
-                    backgroundColor: boardTheme.style === 'filled' ? swatch : 'transparent',
-                    borderWidth: boardTheme.style === 'outline' ? 2 : 0,
-                    borderColor: swatch,
-                  }}
-                />
+                <ThemePreview theme={boardTheme} fallback={swatch} />
                 <Text variant="label">{boardTheme.name}</Text>
                 <Text variant="caption" color="textMuted">
                   {boardTheme.price === 0 ? tr.theme.free : tr.theme.price.replace('{price}', String(boardTheme.price))}
@@ -386,6 +409,45 @@ function PowerLines({ power }: { power: BallPower | undefined }) {
           {tr.capsule.power[line.key].replace('{n}', String(line.value))}
         </Text>
       ))}
+    </View>
+  );
+}
+
+/** A 3×2 corner of a board in the theme's own style — what buying it gets. */
+function ThemePreview({ theme, fallback }: { theme: BoardTheme; fallback: string }) {
+  const colors = useColors();
+  const { scale } = useScreen();
+  const cell = scale(20);
+  const filled = [0, 2, 4];
+  return (
+    <View
+      style={{
+        padding: space.xs,
+        borderRadius: radius.md,
+        backgroundColor: theme.style === 'outline' ? colors.bg : colors.surfaceAlt,
+        flexDirection: 'row',
+        flexWrap: 'wrap',
+        width: cell * 3 + space.xs * 2 + space.xs * 2,
+        gap: space.xs,
+      }}>
+      {Array.from({ length: 6 }, (_, i) => {
+        const color = themeColorFor(theme, i, fallback);
+        const on = filled.includes(i);
+        return (
+          <View
+            key={i}
+            style={{
+              width: cell,
+              height: cell,
+              borderRadius: radius.sm / 2,
+              backgroundColor: on && theme.style === 'filled' ? color : 'transparent',
+              borderWidth: on && theme.style === 'outline' ? 2 : on ? 0 : 1,
+              borderColor: on ? color : colors.border,
+              boxShadow: on && theme.glow ? `0 0 ${space.sm}px ${color}` : undefined,
+            }}
+          />
+        );
+      })}
     </View>
   );
 }

@@ -2,10 +2,11 @@ import { create } from 'zustand';
 
 import * as repo from '@/db/progress';
 import { EMPTY_PROGRESS, type Progress } from '@/db/progress';
+import { BALLS } from '@/game/balls';
 import { CAPSULE_COST, DEFAULT_DIFFICULTY, type Difficulty } from '@/game/curve';
 import { initialState, reduce, seededRandom, type GameState, type TurnResult } from '@/game/engine';
 import { openCapsule, type Pull } from '@/game/gacha';
-import { findBoardTheme } from '@/game/themes';
+import { BOARD_THEMES, findBoardTheme } from '@/game/themes';
 
 /**
  * Persistence and sequencing. Every rule — what spawns, what breaks, what a
@@ -29,6 +30,11 @@ type Store = {
 
   buyTheme: (id: string) => Promise<boolean>;
   selectTheme: (id: string) => Promise<void>;
+
+  // TEMPORARY — test-only, for trying every ball/theme without grinding gold.
+  // Remove this and its call site once testing is done, per the user's own
+  // "daha sonra kapatacağız".
+  debugUnlockAll: () => Promise<void>;
 };
 
 /**
@@ -164,6 +170,17 @@ export const useGame = create<Store>((set, get) => ({
     if (!progress.ownedThemes.includes(id)) return;
 
     const next = { ...progress, boardTheme: id };
+    set({ progress: next });
+    await repo.saveProgress(next);
+  },
+
+  debugUnlockAll: async () => {
+    const progress = get().progress;
+    const next: Progress = {
+      ...progress,
+      owned: BALLS.map((b) => b.id),
+      ownedThemes: BOARD_THEMES.map((t) => t.id),
+    };
     set({ progress: next });
     await repo.saveProgress(next);
   },

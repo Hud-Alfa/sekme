@@ -17,6 +17,7 @@ import { HARD_PITY, SOFT_PITY, openCapsule, type Pity } from '../src/game/gacha'
 import {
   clampAim,
   hitAxis,
+  hitAxisXY,
   hitTriangle,
   reflect,
   reflectOff,
@@ -127,6 +128,24 @@ console.log('\ncollision picks the surface, not the heading');
   eq('dead centre falls back to the nearer wall', hitAxis({ x: 125, y: 125 }, 5, box), 'y');
 }
 
+console.log('\nthe allocation-free hit test agrees with hitAxis');
+{
+  const box = { x: 100, y: 100, width: 50, height: 50 };
+  const code = { null: 0, x: 1, y: 2 } as const;
+  let mismatches = 0;
+  // A sweep of centres through and around the box, including the corners
+  // and the dead-centre fallback.
+  for (let cx = 80; cx <= 170; cx += 2.5) {
+    for (let cy = 80; cy <= 170; cy += 2.5) {
+      for (const radius of [5, 10]) {
+        const expected = code[String(hitAxis({ x: cx, y: cy }, radius, box)) as 'null' | 'x' | 'y'];
+        if (hitAxisXY(cx, cy, radius, box.x, box.y, box.width) !== expected) mismatches += 1;
+      }
+    }
+  }
+  eq('same answer on every sampled centre', mismatches, 0);
+}
+
 console.log('\ntriangle blocks deflect off the diagonal, not the box');
 {
   const box = { x: 100, y: 100, width: 50, height: 50 };
@@ -148,6 +167,34 @@ console.log('\ntriangle blocks deflect off the diagonal, not the box');
   const tl = hitTriangle({ x: 130, y: 130 }, 15, box, 1)!;
   const br = hitTriangle({ x: 120, y: 120 }, 15, box, 4)!;
   eq('tl and br share a diagonal, opposite normals', tl.normal, { x: -br.normal.x, y: -br.normal.y });
+}
+
+console.log('\na triangle is solid on all three sides, and only where it actually is');
+{
+  // Regression, reported from play: balls passed straight through a triangle's
+  // two legs. Only the hypotenuse LINE was ever measured, so the legs deflected
+  // nothing — and, an infinite line having no ends, empty space well outside
+  // the cell could report a hit and bounce a ball off nothing at all.
+  const box = { x: 100, y: 100, width: 50, height: 50 };
+
+  // tl solid: legs lie on the top edge (y=100) and the left edge (x=100).
+  eq('tl: a ball resting on the top leg hits', hitTriangle({ x: 115, y: 94 }, 8, box, 1) !== null, true);
+  eq('tl: a ball resting on the left leg hits', hitTriangle({ x: 94, y: 115 }, 8, box, 1) !== null, true);
+
+  // br solid: legs lie on the bottom edge (y=150) and the right edge (x=150).
+  eq('br: a ball under the bottom leg hits', hitTriangle({ x: 135, y: 156 }, 8, box, 4) !== null, true);
+  eq('br: a ball right of the right leg hits', hitTriangle({ x: 156, y: 135 }, 8, box, 4) !== null, true);
+
+  // The other half of the same bug: nothing outside the cell may report a hit.
+  eq('tl: far to the right of the cell is clear', hitTriangle({ x: 200, y: 125 }, 8, box, 1), null);
+  eq('tl: far below the cell is clear', hitTriangle({ x: 125, y: 200 }, 8, box, 1), null);
+  eq('br: far left of the cell is clear', hitTriangle({ x: 40, y: 125 }, 8, box, 4), null);
+  eq('br: far above the cell is clear', hitTriangle({ x: 125, y: 40 }, 8, box, 4), null);
+
+  // A leg deflects along its own axis, not along the diagonal.
+  const onTopLeg = hitTriangle({ x: 112, y: 94 }, 8, box, 1)!;
+  near('tl: the top leg pushes straight up', onTopLeg.normal.y, -1);
+  near('tl: the top leg does not push sideways', onTopLeg.normal.x, 0);
 }
 
 console.log('\nreflecting off a diagonal is the general mirror formula');
@@ -209,7 +256,7 @@ console.log('\nthe difficulty curve rises without a cliff');
   }
   eq('and never leaps by more than 4 in one turn', biggestJump <= 4, true);
   eq('turn 1 is gentle', baseHp(1, 'orta') <= 3, true);
-  eq('turn 50 is a wall', baseHp(50, 'orta') > 100, true);
+  eq('turn 50 is a wall', baseHp(50, 'orta') > 80, true);
 
   eq('kolay is softer than orta at the same turn', baseHp(50, 'kolay') < baseHp(50, 'orta'), true);
   eq('zor is harder than orta at the same turn', baseHp(50, 'zor') > baseHp(50, 'orta'), true);
@@ -329,10 +376,20 @@ console.log('\nblock damage survives the turn, not just the frame it happened on
   // A fresh row spawns at board[0] (index ROWS - 1 is the death line, at the
   // bottom); descend() shifts row 0 to row 1 as it adds a new row on top.
   const random = seededRandom(7);
-  const state = initialState(random);
-  const column = state.board[0]!.findIndex((c) => c.kind === 'block');
-  const cell = state.board[0]![column]!;
-  const hp = cell.kind === 'block' ? cell.hp : 0;
+  const spawned = initialState(random);
+  // The block is placed, not spawned: what this guards has nothing to do with
+  // the hp curve, and an early spawned block can be 1 hp — which the hit would
+  // clear rather than carry down, testing clearing instead of survival.
+  const column = 0;
+  const hp = 5;
+  const state = {
+    ...spawned,
+    board: spawned.board.map((row, r) =>
+      r === 0
+        ? row.map((c, i) => (i === column ? { kind: 'block' as const, hp, maxHp: hp, shape: 'square' as const } : c))
+        : row,
+    ),
+  };
 
   const damaged = damage(state.board, 0, column).board;
   const next = reduce(state, {

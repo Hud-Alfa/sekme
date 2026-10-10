@@ -1,34 +1,76 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { AppState, View } from 'react-native';
 import { Gesture, GestureDetector } from 'react-native-gesture-handler';
 import Animated, {
+  Easing,
   runOnJS,
   useAnimatedStyle,
   useFrameCallback,
   useSharedValue,
   withSequence,
+  withTiming,
   ZoomOut,
+  type SharedValue,
 } from 'react-native-reanimated';
 import Svg, { Polygon } from 'react-native-svg';
 
+import { LaunchPad, PAD_ROBOT_RATIO } from '@/components/space/LaunchPad';
 import { findBall, type Ball } from '@/game/balls';
 import { EMPTY, type Board, type BlockShape, type Cell } from '@/game/board';
-import { AIM_HORIZONTAL_BOOST, COLUMNS, ROWS, SPEED_IN_CELLS, STUCK } from '@/game/curve';
+import {
+  AIM_HORIZONTAL_BOOST,
+  CLEAR_BOARD_RETURN_SCALE,
+  COLUMNS,
+  ROWS,
+  SPEED_IN_CELLS,
+  STUCK,
+  TURN_SPEEDUP,
+} from '@/game/curve';
 import type { TurnResult } from '@/game/engine';
-import { clampAim, hitAxis, hitTriangle, reflectOff, rotate, stepWalls, subSteps, type TriangleCorner } from '@/game/physics';
+import { clampAim, hitAxisXY, hitTriangle, subSteps, type TriangleCorner } from '@/game/physics';
 import { findBoardTheme, themeColorFor, type BoardTheme } from '@/game/themes';
+import { playSfx } from '@/lib/audio';
 import { formatNumber } from '@/lib/format';
 import { haptic } from '@/lib/haptics';
-import { duration, radius, settle, space, Text, timing, useColors, useTheme } from '@/ui';
+import { duration, HIT_SLOP_MIN, radius, settle, space, Text, timing, useColors, useTheme } from '@/ui';
 
 /** A lucky-ball block break pays this much bonus gold, on the spot. Flat
  * rather than turn-scaled — it is a small surprise, not a second income. */
 const LUCKY_GOLD_BONUS = 2;
+// The anti-stuck jitter angle's sine/cosine, computed once instead of per bounce.
+const JITTER_COS = Math.cos(STUCK.jitterRadians);
+const JITTER_SIN = Math.sin(STUCK.jitterRadians);
+/** Aim ray march step, as a share of a cell — fine enough that the guide
+ * stops within a few pixels of the real contact. */
+const AIM_STEP_RATIO = 0.05;
+/** Gap between aim dots, as a share of a cell. */
+const AIM_DOT_SPACING = 0.45;
+/** How long a collected pickup's pop plays, in ms. */
+const POP_MS = 420;
 
 /** Reserved strip below the play field for the launcher mark and the current
  * ball count, so they never sit on top of a block even when the board is
  * stacked all the way to the floor. */
 const LAUNCHER_STRIP = 52;
+/** The launcher robot's width as a share of the board's — it scales with the
+ * board rather than being a fixed drawing. */
+const ROBOT_WIDTH_RATIO = 0.2;
+/** How small the robot may shrink on a short phone before the board itself
+ * has to narrow — the grid keeps its width, the mascot gives way first. */
+export const MIN_ROBOT_WIDTH_RATIO = 0.13;
+/** Header row height the frame reserves: the 44 pt buttons plus its padding. */
+const HEADER_RESERVE = HIT_SLOP_MIN + space.xl + space.md;
+
+/**
+ * The widest board that still fits `frameHeight` with the header, the grid,
+ * the launcher strip and a launch pad tall enough for the robot — so a short
+ * phone gets a narrower board instead of a robot cut off at the bottom.
+ */
+export function boardWidthFor(frameHeight: number, maxWidth: number): number {
+  const padPerWidth = MIN_ROBOT_WIDTH_RATIO * 1.2 * PAD_ROBOT_RATIO;
+  const fit = (frameHeight - HEADER_RESERVE - LAUNCHER_STRIP) / (ROWS / COLUMNS + padPerWidth);
+  return Math.max(0, Math.min(maxWidth, fit));
+}
 
 /**
  * The playfield.
@@ -72,6 +114,13 @@ const MAX_STEP_RATIO = 0.35;
  * instead of queueing.
  */
 const REPORT_INTERVAL = 1 / 24;
+/**
+ * Same idea for the bounce sound, and for the same reason one step earlier:
+ * `playSfx` already refuses to retrigger a clip this close together, but the
+ * `runOnJS` hop itself is the cost worth avoiding when forty balls are each
+ * hitting something several times a second.
+ */
+const BOUNCE_SOUND_INTERVAL = 1 / 18;
 /** Gap between balls as they leave the launcher. */
 const STAGGER_RATIO = 1.8;
 
@@ -179,6 +228,7 @@ export function GameBoard({
   // headers, buttons and everything outside the play field stay the series'
   // one fixed accent, per `tasarim-sistemi`.
   const boardAccent = theme.accent ?? colors.accent;
+  const outline = theme.style === 'outline';
 
   // The launcher robot's mood — a block sitting in the very last row is one
   // missed shot away from ending the run, which is the moment "gidişat"
@@ -209,11 +259,16 @@ export function GameBoard({
   const speedScale = useSharedValue(1);
   const lastLanding = useSharedValue(-1);
   const aim = useSharedValue({ x: 0, y: -1 });
+  // How far the aimed ball travels before its first contact — a wall or a
+  // block, never a pickup (those do not deflect). The dotted guide stops
+  // exactly there, BBTAN-style, instead of a fixed-length arrow.
+  const aimLen = useSharedValue(0);
   const aiming = useSharedValue(0);
   const tally = useSharedValue({ scored: 0, balls: 0, gold: 0 });
   // Throttles how often a hit/pickup crosses to the JS thread — see the
   // frame loop's own comment at the call site for why.
   const lastReportAt = useSharedValue(-REPORT_INTERVAL);
+  const lastBounceSoundAt = useSharedValue(-BOUNCE_SOUND_INTERVAL);
   // A quick pulse on the collector ring exactly when a ball lands WITH
   // something to show for it — a small "it's home, and it counted" beat to
   // go with the count only climbing on landing now, not mid-flight.
@@ -399,6 +454,7 @@ export function GameBoard({
   const onBreak = useCallback(
     (index: number) => {
       haptic.press();
+      playSfx('kir');
       if (index < 0) return;
       const r = Math.floor(index / COLUMNS);
       const c = index % COLUMNS;
@@ -411,6 +467,33 @@ export function GameBoard({
       setTimeout(() => setBursts((prev) => prev.filter((b) => b.id !== id)), 500);
     },
     [cell, theme, colors.accent],
+  );
+
+  // A pickup no longer just vanishes the instant a ball touches it: the ring
+  // pops outward and fades while its "+N" floats up, so the player sees WHAT
+  // they just grabbed. Same short-lived-state pattern as `bursts` above.
+  const [pops, setPops] = useState<{ id: number; left: number; top: number; label: string; gold: boolean }[]>([]);
+  const popId = useRef(0);
+  const onPickups = useCallback(
+    (list: number[]) => {
+      const next: { id: number; left: number; top: number; label: string; gold: boolean }[] = [];
+      for (let k = 0; k + 1 < list.length; k += 2) {
+        const index = list[k]!;
+        const gold = list[k + 1] === 3;
+        const amount = amountRef.current[index] ?? 1;
+        next.push({
+          id: popId.current++,
+          left: (index % COLUMNS) * cell + cell / 2,
+          top: Math.floor(index / COLUMNS) * cell + cell / 2,
+          label: gold ? `₺${amount}` : `+${amount}`,
+          gold,
+        });
+      }
+      const ids = new Set(next.map((pop) => pop.id));
+      setPops((prev) => [...prev, ...next]);
+      setTimeout(() => setPops((prev) => prev.filter((pop) => !ids.has(pop.id))), POP_MS + 50);
+    },
+    [cell],
   );
 
   /* ---- the frame loop -------------------------------------------------- */
@@ -428,13 +511,30 @@ export function GameBoard({
     // never comes home and the game simply stops. Jitter and the speed-up are
     // still turn-wide (a gentle nudge to everyone costs little) — only the
     // force-return below is judged per ball, since it is the disruptive one.
-    if (elapsed.value > STUCK.speedUpAfter) speedScale.value = 2;
+    if (elapsed.value > STUCK.speedUpAfter) speedScale.value = STUCK.speedUpScale;
     const jitter = elapsed.value > STUCK.jitterAfter;
 
-    const current = g.speed * speedScale.value;
+    // The turn's own acceleration, on top of the stuck-rescue scale above.
+    let ramp = 1;
+    for (let stage = 0; stage < TURN_SPEEDUP.length; stage++) {
+      if (elapsed.value > TURN_SPEEDUP[stage]!.after) ramp = TURN_SPEEDUP[stage]!.scale;
+    }
+
+    // Nothing left to hit: the turn is decided, so stop making everyone watch
+    // the balls finish. They come home fast instead of bouncing on an empty
+    // board, which is the one case where a long flight has nothing to offer.
+    const liveKinds = cells.value.kinds;
+    let blocksLeft = false;
+    for (let index = 0; index < liveKinds.length; index++) {
+      if (liveKinds[index] === 1) {
+        blocksLeft = true;
+        break;
+      }
+    }
+
+    const current = g.speed * speedScale.value * ramp * (blocksLeft ? 1 : CLEAR_BOARD_RETURN_SCALE);
     const steps = subSteps(current, dt, g.cell * MAX_STEP_RATIO);
     const stepDt = dt / steps;
-    const bounds = { left: 0, right: g.width, top: 0 };
 
     const f = flight.value;
     const px = [...f.px];
@@ -472,31 +572,73 @@ export function GameBoard({
     let broke = false;
     let brokeAt = -1;
     let changed = false;
+    let bounced = false;
+    let pickedBall = false;
+    let pickedGold = false;
+    // [index, kind, index, kind, …] of pickups grabbed this frame, for
+    // the pop animation on the JS side.
+    const picked: number[] = [];
     let moving = 0;
+
+    // Every coordinate below is a plain number, not a {x, y} object: this
+    // loop runs for every ball × every sub-step × every nearby cell, and the
+    // objects it used to allocate were most of the garbage the UI thread had
+    // to collect in the middle of a shot. Only a triangle contact (rare, and
+    // at most once per sub-step) still builds objects.
+    const R = g.ballRadius;
+    const C = g.cell;
+    const W = g.width;
+    const H = g.height;
+    const pickupReach = R + g.magnetRadius * C;
 
     for (let i = 0; i < BALL_POOL; i++) {
       if (live[i] !== 1) continue;
 
       stuckTimer[i] = (stuckTimer[i] ?? 0) + dt;
-      const forceReturn = stuckTimer[i]! > STUCK.forceReturnAfter;
+      // An empty arena returns everyone the same way a stuck ball is returned
+      // — there is nothing left to hit, so the flight has no outcome left.
+      const forceReturn = stuckTimer[i]! > STUCK.forceReturnAfter || !blocksLeft;
 
-      let position = { x: px[i]!, y: py[i]! };
-      let velocity = { x: vx[i]!, y: vy[i]! };
+      let x = px[i]!;
+      let y = py[i]!;
+      let bvx = vx[i]!;
+      let bvy = vy[i]!;
 
       for (let s = 0; s < steps; s++) {
         if (forceReturn) {
-          velocity = { x: velocity.x * 0.2, y: Math.abs(velocity.y) + current };
+          bvx *= 0.2;
+          bvy = Math.abs(bvy) + current;
         }
 
-        const walled = stepWalls(position, velocity, g.ballRadius, bounds, stepDt);
-        position = walled.position;
-        velocity = walled.velocity;
+        // Walls: stepWalls, inlined.
+        x += bvx * stepDt;
+        y += bvy * stepDt;
+        if (x - R < 0) {
+          x = R;
+          if (bvx < 0) {
+            bvx = -bvx;
+            bounced = true;
+          }
+        } else if (x + R > W) {
+          x = W - R;
+          if (bvx > 0) {
+            bvx = -bvx;
+            bounced = true;
+          }
+        }
+        if (y - R < 0) {
+          y = R;
+          if (bvy < 0) {
+            bvy = -bvy;
+            bounced = true;
+          }
+        }
 
-        // Only the cells the ball could possibly be touching.
-        const minRow = Math.max(0, Math.floor((position.y - g.ballRadius) / g.cell));
-        const maxRow = Math.min(ROWS - 1, Math.floor((position.y + g.ballRadius) / g.cell));
-        const minCol = Math.max(0, Math.floor((position.x - g.ballRadius) / g.cell));
-        const maxCol = Math.min(COLUMNS - 1, Math.floor((position.x + g.ballRadius) / g.cell));
+        // Only the cells the ball (or its magnet) could possibly be touching.
+        const minRow = Math.max(0, Math.floor((y - pickupReach) / C));
+        const maxRow = Math.min(ROWS - 1, Math.floor((y + pickupReach) / C));
+        const minCol = Math.max(0, Math.floor((x - pickupReach) / C));
+        const maxCol = Math.min(COLUMNS - 1, Math.floor((x + pickupReach) / C));
 
         // A ball can overlap several blocks at once at a corner, now that
         // blocks tile edge-to-edge with no gap between them. Reflecting once
@@ -512,114 +654,93 @@ export function GameBoard({
             const kind = kinds[index] ?? 0;
             if (kind === 0) continue;
 
-            const box = { x: c * g.cell, y: r * g.cell, width: g.cell, height: g.cell };
-            // A pickup reaches out to the ball's magnet radius, not just its
-            // physical radius — a block's hitbox never grows, only a
-            // pickup's, so magnet balls never gain reach through a wall.
-            const reach = kind === 1 ? g.ballRadius : g.ballRadius + g.magnetRadius * g.cell;
-            const shape = kind === 1 ? (shapes[index] ?? 0) : 0;
+            const bx = c * C;
+            const by = r * C;
 
-            // A triangle's two legs sit flush on the cell's own edges — from
-            // outside the cell those behave exactly like a square block's
-            // faces, so only the diagonal hypotenuse needs its own check.
-            // `axis` drives the existing square path; `triangleHit` drives
-            // the new one; exactly one of them is ever set.
-            const axis = shape === 0 ? hitAxis(position, reach, box) : null;
-            const triangleHit = shape === 0 ? null : hitTriangle(position, reach, box, shape as TriangleCorner);
-            if (axis === null && triangleHit === null) continue;
-
-            changed = true;
-
-            if (kind === 1) {
-              // Contact, not just a break — a ball still chewing through a
-              // tough block should never be force-returned mid-fight.
-              stuckTimer[i] = 0;
-              hp[index] = (hp[index] ?? 1) - g.damagePerHit;
-              scored += 1;
-              if ((hp[index] ?? 0) <= 0) {
-                kinds[index] = 0;
-                broke = true;
-                brokeAt = index;
-                if (g.luckyGoldChance > 0 && Math.random() < g.luckyGoldChance) {
-                  goldCredit[i] += LUCKY_GOLD_BONUS;
-                }
-              }
-              // A pierce roll lets the ball skip reflecting off THIS block —
-              // it keeps going, possibly straight into whatever is behind it.
-              // Damage above still applies either way; only the bounce is
-              // skipped. Rolled once per block per sub-step, not once per
-              // ball per frame, so a pierce ball still bounces normally off
-              // every OTHER block it meets.
-              const pierced = g.pierceChance > 0 && Math.random() < g.pierceChance;
-              if (!blockHit && !pierced) {
-                blockHit = true;
-
-                if (axis !== null) {
-                  velocity = {
-                    x: axis === 'x' ? -velocity.x : velocity.x,
-                    y: axis === 'y' ? -velocity.y : velocity.y,
-                  };
-                  if (jitter) velocity = rotate(velocity, STUCK.jitterRadians);
-
-                  // Reflecting velocity alone does not move the ball — with
-                  // blocks now touching edge-to-edge, a ball that penetrated
-                  // past a boundary in one sub-step would stay embedded and
-                  // keep re-triggering the same collision next sub-step,
-                  // reflecting back and forth in place instead of leaving.
-                  // Push it back to just outside the box it hit.
-                  if (axis === 'x') {
-                    position = {
-                      x:
-                        position.x < box.x + box.width / 2
-                          ? box.x - g.ballRadius
-                          : box.x + box.width + g.ballRadius,
-                      y: position.y,
-                    };
-                  } else {
-                    position = {
-                      x: position.x,
-                      y:
-                        position.y < box.y + box.height / 2
-                          ? box.y - g.ballRadius
-                          : box.y + box.height + g.ballRadius,
-                    };
-                  }
-                } else if (triangleHit !== null) {
-                  velocity = reflectOff(velocity, triangleHit.normal);
-                  if (jitter) velocity = rotate(velocity, STUCK.jitterRadians);
-                  // Same reasoning as the square push-out above, along the
-                  // diagonal's own normal instead of an axis.
-                  const push = g.ballRadius - triangleHit.distance;
-                  position = {
-                    x: position.x + triangleHit.normal.x * push,
-                    y: position.y + triangleHit.normal.y * push,
-                  };
-                }
-              }
-            } else {
+            if (kind !== 1) {
               // Pickups do not deflect: a ball that bounced off a "+1" would
               // punish the player for collecting it. The amount is HELD on
               // this ball, not credited yet — it only counts once the ball
-              // that grabbed it actually comes home (below), so the visible
-              // total climbs as balls land, not the instant one touches a
-              // pickup mid-air.
+              // that grabbed it actually comes home (below). A pickup reaches
+              // out to the magnet radius; a block's hitbox never grows.
+              if (hitAxisXY(x, y, pickupReach, bx, by, C) === 0) continue;
+              changed = true;
               kinds[index] = 0;
+              picked.push(index, kind);
               const pickupAmount = cells.value.amount[index] ?? 1;
-              if (kind === 2) ballCredit[i] += pickupAmount;
-              else goldCredit[i] += pickupAmount;
+              if (kind === 2) {
+                ballCredit[i] += pickupAmount;
+                pickedBall = true;
+              } else {
+                goldCredit[i] += pickupAmount;
+                pickedGold = true;
+              }
+              continue;
+            }
+
+            const shape = shapes[index] ?? 0;
+            const axis = shape === 0 ? hitAxisXY(x, y, R, bx, by, C) : 0;
+            const triangleHit =
+              shape === 0
+                ? null
+                : hitTriangle({ x, y }, R, { x: bx, y: by, width: C, height: C }, shape as TriangleCorner);
+            if (axis === 0 && triangleHit === null) continue;
+
+            changed = true;
+            // Contact, not just a break — a ball still chewing through a
+            // tough block should never be force-returned mid-fight.
+            stuckTimer[i] = 0;
+            hp[index] = (hp[index] ?? 1) - g.damagePerHit;
+            scored += 1;
+            if ((hp[index] ?? 0) <= 0) {
+              kinds[index] = 0;
+              broke = true;
+              brokeAt = index;
+              if (g.luckyGoldChance > 0 && Math.random() < g.luckyGoldChance) {
+                goldCredit[i] += LUCKY_GOLD_BONUS;
+              }
+            }
+            // A pierce roll lets the ball skip reflecting off THIS block -
+            // damage above still applies, only the bounce is skipped.
+            const pierced = g.pierceChance > 0 && Math.random() < g.pierceChance;
+            if (blockHit || pierced) continue;
+            blockHit = true;
+            bounced = true;
+
+            if (axis !== 0) {
+              // Reflecting velocity alone does not move the ball — one that
+              // penetrated past a boundary in this sub-step would stay
+              // embedded and re-trigger next sub-step. Push it back out.
+              if (axis === 1) {
+                bvx = -bvx;
+                x = x < bx + C / 2 ? bx - R : bx + C + R;
+              } else {
+                bvy = -bvy;
+                y = y < by + C / 2 ? by - R : by + C + R;
+              }
+            } else if (triangleHit !== null) {
+              const nx = triangleHit.normal.x;
+              const ny = triangleHit.normal.y;
+              const dot = bvx * nx + bvy * ny;
+              bvx -= 2 * dot * nx;
+              bvy -= 2 * dot * ny;
+              const push = R - triangleHit.distance;
+              x += nx * push;
+              y += ny * push;
+            }
+            if (jitter) {
+              const rx = bvx * JITTER_COS - bvy * JITTER_SIN;
+              bvy = bvx * JITTER_SIN + bvy * JITTER_COS;
+              bvx = rx;
             }
           }
         }
 
-        if (position.y + g.ballRadius >= g.height) {
+        if (y + R >= H) {
           live[i] = 2;
-          // Unconditional, not "only if unset": the next shot should start
-          // from wherever the LAST ball came home, not the first — the ball
-          // loop runs in index order each frame, not landing order, so
-          // whichever one lands last (this frame or a later one) simply
-          // overwrites it, and whatever value is left when the turn ends is
-          // correct by construction.
-          lastLanding.value = position.x / g.width;
+          // Unconditional: the next shot starts from wherever the LAST ball
+          // came home, and whichever lands last simply overwrites this.
+          lastLanding.value = x / W;
 
           // This ball is home — anything it grabbed on the way finally
           // counts, and only now.
@@ -635,10 +756,10 @@ export function GameBoard({
         }
       }
 
-      px[i] = position.x;
-      py[i] = position.y;
-      vx[i] = velocity.x;
-      vy[i] = velocity.y;
+      px[i] = x;
+      py[i] = y;
+      vx[i] = bvx;
+      vy[i] = bvy;
       if (live[i] === 1) moving += 1;
     }
 
@@ -647,11 +768,25 @@ export function GameBoard({
     tally.value = { scored, balls: ballsGot, gold: goldGot };
 
     if (broke) runOnJS(onBreak)(brokeAt);
+
+    // Sound, on the same discipline as the hit bridge above: a pickup is once
+    // an event and crosses immediately; a bounce is constant and crosses at a
+    // capped rate. A break makes its own noise through `onBreak`, so a bounce
+    // that also broke the block stays silent rather than doubling up.
+    if (pickedBall) runOnJS(playSfx)('top');
+    if (pickedGold) runOnJS(playSfx)('altin');
+    if (bounced && !broke && elapsed.value - lastBounceSoundAt.value >= BOUNCE_SOUND_INTERVAL) {
+      lastBounceSoundAt.value = elapsed.value;
+      runOnJS(playSfx)('sek');
+    }
     // A block actually breaking always reports immediately — that is the one
     // moment "did it disappear yet" is judged on. A plain hp tick (still
     // `changed`, nothing `broke`) waits for the next open slot in the rate
     // cap instead of firing on its own frame.
-    if (changed && (broke || elapsed.value - lastReportAt.value >= REPORT_INTERVAL)) {
+    if (picked.length > 0) runOnJS(onPickups)(picked);
+    // A pickup reports at once too, so it vanishes the same frame its pop
+    // animation starts instead of up to one throttle slot later.
+    if (changed && (broke || picked.length > 0 || elapsed.value - lastReportAt.value >= REPORT_INTERVAL)) {
       lastReportAt.value = elapsed.value;
       runOnJS(reportProgress)(kinds, hp, ballsGot, goldGot);
     }
@@ -682,12 +817,60 @@ export function GameBoard({
 
   /* ---- aiming and firing ----------------------------------------------- */
 
+  // March the ball's own circle along the aim from the exact spot the physics
+  // launches it, and stop at the first wall or block it would touch. A fine
+  // fixed step (a few percent of a cell) is plenty for a guide and only runs
+  // when the finger moves, never per frame.
+  const castAim = () => {
+    'worklet';
+    const g = geometry.value;
+    const R = g.ballRadius;
+    const C = g.cell;
+    const kinds = cells.value.kinds;
+    const shapes = cells.value.shapes;
+    const dx = aim.value.x;
+    const dy = aim.value.y;
+    const step = C * AIM_STEP_RATIO;
+    const limit = (g.width + g.height) * 2;
+    let x = launchX * g.width;
+    let y = g.height - R - 1;
+    let travelled = 0;
+    while (travelled < limit) {
+      const nx = x + dx * step;
+      const ny = y + dy * step;
+      if (nx - R < 0 || nx + R > g.width || ny - R < 0) break;
+      let hit = false;
+      const minRow = Math.max(0, Math.floor((ny - R) / C));
+      const maxRow = Math.min(ROWS - 1, Math.floor((ny + R) / C));
+      const minCol = Math.max(0, Math.floor((nx - R) / C));
+      const maxCol = Math.min(COLUMNS - 1, Math.floor((nx + R) / C));
+      for (let r = minRow; r <= maxRow && !hit; r++) {
+        for (let c = minCol; c <= maxCol && !hit; c++) {
+          const index = r * COLUMNS + c;
+          if (kinds[index] !== 1) continue;
+          const shape = shapes[index] ?? 0;
+          hit =
+            shape === 0
+              ? hitAxisXY(nx, ny, R, c * C, r * C, C) !== 0
+              : hitTriangle({ x: nx, y: ny }, R, { x: c * C, y: r * C, width: C, height: C }, shape as TriangleCorner) !==
+                null;
+        }
+      }
+      if (hit) break;
+      x = nx;
+      y = ny;
+      travelled += step;
+    }
+    aimLen.value = travelled;
+  };
+
   const aimAt = (x: number, y: number) => {
     'worklet';
     // Boosted before the clamp normalises it — the raw offset is capped by
     // the board's own width, which on a 7-column board never let a finger
     // near the middle reach a wide angle no matter how far it dragged.
     aim.value = clampAim({ x: (x - launchX * width) * AIM_HORIZONTAL_BOOST, y: y - height });
+    castAim();
   };
 
   // Dragging back to within this many pixels of the launch point and
@@ -720,8 +903,10 @@ export function GameBoard({
     })
     .onEnd((event) => {
       'worklet';
-      if (flying.value === 1 || turnLocked.value === 1 || locked) return;
+      // Hidden before the lock check, not after: a turn that locked while the
+      // finger was still down used to leave the guide stuck on screen.
       aiming.value = timing(0, duration.fast);
+      if (flying.value === 1 || turnLocked.value === 1 || locked) return;
 
       if (dragDistance(event.x, event.y) < cancelRadius) return;
 
@@ -733,18 +918,15 @@ export function GameBoard({
       lastReportAt.value = -REPORT_INTERVAL;
       flying.value = 1;
       runOnJS(setInFlight)(true);
+    })
+    // A cancelled gesture (another touch, the screen leaving) never reaches
+    // onEnd; this always runs, so the guide can never outlive the finger.
+    .onFinalize(() => {
+      'worklet';
+      aiming.value = timing(0, duration.fast);
     });
 
   /* ---- rendering ------------------------------------------------------- */
-
-  const aimLine = useAnimatedStyle(() => ({
-    opacity: aiming.value,
-    transform: [
-      { translateX: launchX * width },
-      { translateY: height },
-      { rotate: `${Math.atan2(aim.value.y, aim.value.x) + Math.PI / 2}rad` },
-    ],
-  }));
 
   const collectStyle = useAnimatedStyle(() => ({ transform: [{ scale: collectPulse.value }] }));
 
@@ -753,7 +935,41 @@ export function GameBoard({
   // can see and learn, not a hidden trick they stumble into.
   const cancelRingStyle = useAnimatedStyle(() => ({ opacity: aiming.value > 0 ? 0.35 : 0 }));
 
-  const dots = useMemo(() => Array.from({ length: BALL_POOL }, (_, i) => i), []);
+  // One view per ball actually owned, not the whole pool: each Dot runs an
+  // animated-style mapper every frame of a shot, and an early run with five
+  // balls has no reason to pay for sixty.
+  const dotCount = Math.min(BALL_POOL, Math.max(1, ballCount));
+  const dots = useMemo(() => Array.from({ length: dotCount }, (_, i) => i), [dotCount]);
+  const aimDots = useMemo(
+    () => Array.from({ length: Math.ceil(Math.hypot(COLUMNS, ROWS) / AIM_DOT_SPACING) }, (_, i) => i),
+    [],
+  );
+
+  // The 63 faint cell outlines never change during a shot, but they sat
+  // inline in this render — every mid-shot hit report rebuilt all of them.
+  // Memoised, React skips the whole subtree on those re-renders.
+  const gridLines = useMemo(
+    () =>
+      Array.from({ length: ROWS }, (_, r) =>
+        Array.from({ length: COLUMNS }, (_, c) => (
+          <View
+            key={`grid-${r}-${c}`}
+            pointerEvents="none"
+            style={{
+              position: 'absolute',
+              left: c * cell,
+              top: r * cell,
+              width: cell,
+              height: cell,
+              borderWidth: 1,
+              borderRadius: radius.sm,
+              borderColor: outline ? `${boardAccent}22` : `${colors.border}80`,
+            }}
+          />
+        )),
+      ),
+    [cell, outline, boardAccent, colors.border],
+  );
 
   // Where the launcher mark and ball count sit, clamped so the group never
   // spills past the board's own edges — a shot fired from the far left or
@@ -768,7 +984,6 @@ export function GameBoard({
   // centred inside it — the frame's own border/tint is what fills the space,
   // not the grid stretching to a size its physics were never tuned for.
   const framed = Math.max(frameHeight ?? 0, height + LAUNCHER_STRIP);
-  const outline = theme.style === 'outline';
 
   return (
     <View
@@ -779,47 +994,27 @@ export function GameBoard({
         borderRadius: radius.xl,
         borderWidth: 2,
         borderColor: outline ? `${boardAccent}AA` : colors.border,
-        backgroundColor: outline ? `${boardAccent}0F` : colors.surfaceAlt,
+        backgroundColor: outline ? `${colors.bg}B3` : `${colors.surfaceAlt}C7`,
         overflow: 'hidden',
         boxShadow: theme.glow ? `0 0 ${Math.round(width * 0.025)}px ${boardAccent}55` : undefined,
       }}>
       {/* Back/restart and the score row live inside the frame now — the
           panel's own top edge, not a separate row above it. */}
-      {header ? <View style={{ paddingHorizontal: space.md, paddingTop: space.sm }}>{header}</View> : null}
+      {header ? <View style={{ paddingHorizontal: space.md, paddingTop: space.xl }}>{header}</View> : null}
 
-      {/* The grid+launcher+robot as ONE centred group, not the grid pinned
-          to the top with the robot trailing below it — the grid is
-          column-width-bound, so there is always some leftover height no
-          matter what; centring the whole group splits that leftover space
-          evenly above and below instead of stranding it entirely on one
-          side. */}
-      <View style={{ flex: 1, alignItems: 'center', justifyContent: 'center' }}>
+      {/* Grid right under the header, then the launch pad taking whatever
+          height is left: the leftover space on a tall phone becomes the
+          robot's ground instead of blank bands above and below the grid. */}
+      <View style={{ flex: 1, alignItems: 'center', paddingTop: space.md }}>
       <GestureDetector gesture={gesture}>
         <View style={{ width, height: height + LAUNCHER_STRIP }}>
           {/* A faint outline per cell, occupied or not — an empty row used to
               read as bare black; now the whole 9-row grid reads as one
               structured field regardless of how much of it is filled yet. */}
-          {Array.from({ length: ROWS }, (_, r) =>
-            Array.from({ length: COLUMNS }, (_, c) => (
-              <View
-                key={`grid-${r}-${c}`}
-                pointerEvents="none"
-                style={{
-                  position: 'absolute',
-                  left: c * cell,
-                  top: r * cell,
-                  width: cell,
-                  height: cell,
-                  borderWidth: 1,
-                  borderRadius: radius.sm,
-                  borderColor: outline ? `${boardAccent}22` : `${colors.border}80`,
-                }}
-              />
-            )),
-          )}
+          {gridLines}
 
           {/* A horizontal divider between the blocks' territory and the
-              ball's — the nine-row grid above it, the launcher strip below,
+              ball's - the nine-row grid above it, the launcher strip below,
               so the two zones read as two zones instead of one tall field
               that happens to have a marker near the bottom. Themed like
               everything else in the frame. */}
@@ -888,7 +1083,13 @@ export function GameBoard({
                   alignItems: 'center',
                   justifyContent: 'center',
                 }}>
-                <Text variant="caption" color={isBall ? 'text' : 'warning'} numeric numberOfLines={1}>
+                <Text
+                  variant="caption"
+                  color={isBall ? 'text' : 'warning'}
+                  numeric
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  style={{ width: ballRadius * 3 - space.xs, textAlign: 'center' }}>
                   {isBall ? `+${original.amount ?? 1}` : `₺${original.amount ?? 1}`}
                 </Text>
               </View>
@@ -897,7 +1098,7 @@ export function GameBoard({
         )}
 
         {/* A triangle's hp number, drawn as its own pass instead of inside
-            BlockCell next to the triangle shape — see the long comment in
+            BlockCell next to the triangle shape - see the long comment in
             BlockCell for why that combination made the text invisible. */}
         {board.map((row, r) =>
           row.map((original, c) => {
@@ -907,6 +1108,12 @@ export function GameBoard({
             if (shape === 'square') return null;
 
             const centroid = triangleCentroid(shape, cell);
+            // Same colour and fade rule a square's own number follows: on an
+            // outline theme the digit takes the block's colour, because
+            // `onAccent` over a hollow cell is the board's background.
+            const blockColor = themeColorFor(theme, index, colors.accent);
+            const hp = liveCells.hp[index] ?? 1;
+            const maxHp = original.kind === 'block' ? original.maxHp : 1;
             return (
               <Text
                 key={`num-${r}-${c}`}
@@ -918,22 +1125,23 @@ export function GameBoard({
                   top: r * cell + centroid.y - 9,
                   width: 18,
                   textAlign: 'center',
-                  color: colors.onAccent,
+                  color: outline ? blockColor : colors.onAccent,
+                  opacity: 0.4 + Math.min(1, hp / Math.max(1, maxHp)) * 0.6,
                 }}>
-                {liveCells.hp[index] ?? 1}
+                {hp}
               </Text>
             );
           }),
         )}
 
         {/* Always visible, not just while dragging: where the next shot
-            starts from — which is also exactly where the last ball came
+            starts from - which is also exactly where the last ball came
             home, since a turn's end sets launchX to that spot. Lives in the
             reserved strip below the field, not on top of it, so it can
             never land on a block even when the stack reaches the floor. A
             small pill (the equipped ball's own colour + the count) sits
             above a collector ring that pulses the instant a ball actually
-            lands with something to show for it — "how many, from where,
+            lands with something to show for it - "how many, from where,
             and just now" instead of a bare number. */}
         <View
           pointerEvents="none"
@@ -1010,49 +1218,33 @@ export function GameBoard({
           ]}
         />
 
-        <Animated.View pointerEvents="none" style={[{ position: 'absolute' }, aimLine]}>
-          {/* A plain bar only showed heading, not destination — the arrowhead
-              is what actually answers "where is this going". */}
-          <View
-            style={{
-              position: 'absolute',
-              bottom: 0,
-              left: -9,
-              width: 18,
-              height: 18,
-              borderRadius: radius.pill,
-              borderWidth: 2,
-              borderColor: boardAccent,
-              opacity: 0.5,
-            }}
+        {/* The aim guide: dots from the launch point to the first thing the
+            ball would touch, then a ghost of the ball sitting at that
+            contact. Stops short on purpose — it shows the first bounce,
+            not the whole route. */}
+        {aimDots.map((i) => (
+          <AimDot
+            key={i}
+            index={i}
+            spacing={cell * AIM_DOT_SPACING}
+            size={Math.max(3, ballRadius * 0.9)}
+            originX={launchX * width}
+            originY={height - ballRadius - 1}
+            aim={aim}
+            aimLen={aimLen}
+            aiming={aiming}
+            color={boardAccent}
           />
-          <View
-            style={{
-              position: 'absolute',
-              bottom: 0,
-              left: -2,
-              width: 4,
-              height: height * 0.32,
-              borderRadius: radius.pill,
-              backgroundColor: boardAccent,
-            }}
-          />
-          <View
-            style={{
-              position: 'absolute',
-              bottom: height * 0.32 - 4,
-              left: -9,
-              width: 0,
-              height: 0,
-              borderLeftWidth: 9,
-              borderRightWidth: 9,
-              borderBottomWidth: 13,
-              borderLeftColor: 'transparent',
-              borderRightColor: 'transparent',
-              borderBottomColor: boardAccent,
-            }}
-          />
-        </Animated.View>
+        ))}
+        <AimGhost
+          size={ballRadius * 2}
+          originX={launchX * width}
+          originY={height - ballRadius - 1}
+          aim={aim}
+          aimLen={aimLen}
+          aiming={aiming}
+          color={boardAccent}
+        />
 
           {dots.map((i) => (
             <Dot key={i} index={i} flight={flight} size={ballRadius * 2} ball={ball} scheme={scheme} glow={theme.glow} />
@@ -1061,31 +1253,38 @@ export function GameBoard({
           {bursts.map((b) => (
             <Burst key={b.id} left={b.left} top={b.top} color={b.color} />
           ))}
+
+          {pops.map((pop) => (
+            <PickupPop
+              key={pop.id}
+              left={pop.left}
+              top={pop.top}
+              size={ballRadius * 3}
+              label={pop.label}
+              color={pop.gold ? colors.warning : colors.text}
+            />
+          ))}
         </View>
       </GestureDetector>
 
-      {/* Right under the launcher marker, not pinned to the panel's bottom —
-          a ball should read as coming FROM this robot, which only works if
-          it sits close enough to where the ball actually appears. A little
-          top padding, not none: touching would look like one glued-together
-          sticker instead of the ring sitting just above the robot's head.
-          No `flex: 1` here any more — this sits at its own natural size so
-          the OUTER wrapper above is the one deciding where the leftover
-          space goes (centred, around the whole group), not this one. */}
-      <View style={{ width, alignItems: 'center', paddingTop: space.xs }}>
-        <LauncherConsole
-          accent={boardAccent}
-          ballColor={ball.color}
-          outline={outline}
-          scheme={scheme}
-          palette={theme.palette}
-          mood={mood}
-        />
-      </View>
+      <LaunchPad
+        width={width}
+        launchX={launchX}
+        robotSize={width * ROBOT_WIDTH_RATIO}
+        minRobotSize={width * MIN_ROBOT_WIDTH_RATIO}
+        accent={boardAccent}
+        ballColor={ball.color}
+        mood={mood}
+        trims={theme.palette}
+      />
       </View>
     </View>
   );
 }
+
+/** Outline weight shared by both block shapes, so a triangle carries the
+ * same visual line as the square standing next to it. */
+const STROKE = 2;
 
 /**
  * A block. Hit feedback (a quick punch) and break feedback (fade and shrink
@@ -1093,7 +1292,11 @@ export function GameBoard({
  * `exiting` fires the moment React stops rendering this cell, which is
  * exactly the frame `liveCells` reports it broken.
  */
-function BlockCell({
+// Memoised: a mid-shot hit report re-renders the board, but only the
+// cells whose hp actually changed need to redraw — the rest compare equal.
+const BlockCell = memo(BlockCellImpl);
+
+function BlockCellImpl({
   hp,
   maxHp,
   shape,
@@ -1192,14 +1395,27 @@ function BlockCell({
             { width: size, height: size },
             animatedStyle,
             { opacity: 0.4 + intensity * 0.6 },
-            outline && glow ? { boxShadow: `0 0 ${Math.round(size * 0.22)}px ${color}` } : null,
           ]}>
           <Svg width={size} height={size} pointerEvents="none">
+            {/* The halo a square gets from `boxShadow`, which a transparent
+                View with an SVG child does not paint: a wider, translucent
+                stroke under the crisp one. */}
+            {outline && glow ? (
+              <Polygon
+                points={trianglePoints(shape, size, STROKE * 1.5)}
+                fill="transparent"
+                stroke={color}
+                strokeOpacity={0.35}
+                strokeWidth={STROKE * 3}
+                strokeLinejoin="round"
+              />
+            ) : null}
             <Polygon
-              points={trianglePoints(shape, size)}
+              points={trianglePoints(shape, size, outline ? STROKE / 2 : 0)}
               fill={outline ? 'transparent' : color}
               stroke={outline ? color : 'none'}
-              strokeWidth={outline ? 2 : 0}
+              strokeWidth={outline ? STROKE : 0}
+              strokeLinejoin="round"
             />
           </Svg>
         </Animated.View>
@@ -1216,28 +1432,37 @@ function BlockCell({
  * physics shape" bug a previous version of this kept getting wrong (a
  * mirrored diagonal on two of the four shapes, then a shape rendered
  * entirely outside its own cell on the other two).
+ *
+ * `inset` pulls the outline in by half its own stroke width. An SVG stroke
+ * straddles the path, so the two legs — which sit exactly on the cell's
+ * edges — were having their outer half clipped by the viewport, leaving a
+ * triangle that read as a bare diagonal next to fully drawn squares. The
+ * collision shape (`hitTriangle`) still uses the true corners; this is a
+ * sub-pixel drawing offset, not a different triangle.
  */
-function trianglePoints(shape: 'tl' | 'tr' | 'bl' | 'br', size: number): string {
+function trianglePoints(shape: 'tl' | 'tr' | 'bl' | 'br', size: number, inset = 0): string {
+  const lo = inset;
+  const hi = size - inset;
   const corners: Record<'tl' | 'tr' | 'bl' | 'br', [number, number][]> = {
     tl: [
-      [0, 0],
-      [size, 0],
-      [0, size],
+      [lo, lo],
+      [hi, lo],
+      [lo, hi],
     ],
     tr: [
-      [0, 0],
-      [size, 0],
-      [size, size],
+      [lo, lo],
+      [hi, lo],
+      [hi, hi],
     ],
     bl: [
-      [0, 0],
-      [0, size],
-      [size, size],
+      [lo, lo],
+      [lo, hi],
+      [hi, hi],
     ],
     br: [
-      [size, 0],
-      [0, size],
-      [size, size],
+      [hi, lo],
+      [lo, hi],
+      [hi, hi],
     ],
   };
   return corners[shape].map(([x, y]) => `${x},${y}`).join(' ');
@@ -1304,7 +1529,7 @@ function Dot({
   return (
     <Animated.View pointerEvents="none" style={[{ position: 'absolute' }, style]}>
       {/* Every ball still gets a soft glow, just a much quieter one than
-          before — a flat-colored dot the size of a fingertip disappears
+          before - a flat-colored dot the size of a fingertip disappears
           against a board full of similarly-toned blocks without one, but
           the glow only needs to be a hint, not a second circle. */}
       <View
@@ -1320,7 +1545,7 @@ function Dot({
         }}
       />
       {/* One ringed circle instead of three stacked views (a dark backing
-          ring, a fill, and a specular highlight) — the border alone still
+          ring, a fill, and a specular highlight) - the border alone still
           reads against both light and dark surfaces, since `rimColor`
           already flips per scheme, and cutting the other two views is most
           of what actually reduces the clutter when many balls overlap. */}
@@ -1392,185 +1617,106 @@ function Shard({
   );
 }
 
-/**
- * The launcher's own silhouette — closer to the referans reference's small
- * robot/cannon than a generic rounded body: antenna, a lensed head, a boxy
- * body with angled shoulder panels, and legs, all built from the same
- * borders/rectangles/rotations as everything else in this file rather than
- * an image, so it scales cleanly, themes for free, and never looks out of
- * place next to the blocks. Sits at the bottom of whatever space is left
- * under the launcher.
- */
-function LauncherConsole({
-  accent,
-  ballColor,
-  outline,
-  scheme,
-  palette,
-  mood = 'happy',
-}: {
-  accent: string;
-  ballColor: string;
-  outline: boolean;
-  scheme: 'light' | 'dark';
-  /** `gokkusagi`'s per-block palette, if the active theme has one. The
-   * blocks already cycle through it; without this the robot and marker
-   * were the one thing on a "rainbow" board that stayed a single flat
-   * colour, which read as mismatched rather than personalised. */
-  palette?: string[];
-  /** Reflects how the run is going: a block one row from the bottom line
-   * ('worried') or the run already over ('sad') get their own face,
-   * everything else keeps the default. */
-  mood?: 'happy' | 'worried' | 'sad';
-}) {
-  // The rim, like the ball's own rim in `Dot`, has to flip with the scheme
-  // or it vanishes against a light background — same fix, same reason.
-  const lensRim = outline ? accent : scheme === 'light' ? 'rgba(11,11,15,0.28)' : 'rgba(255,255,255,0.55)';
-  const panel = outline
-    ? { backgroundColor: 'transparent', borderWidth: 2, borderColor: accent }
-    : { backgroundColor: `${accent}1F`, borderWidth: 2, borderColor: accent };
-  const glow = outline ? { boxShadow: `0 0 10px ${accent}66` } : null;
+type AimProps = {
+  originX: number;
+  originY: number;
+  aim: SharedValue<{ x: number; y: number }>;
+  aimLen: SharedValue<number>;
+  aiming: SharedValue<number>;
+  color: string;
+};
 
-  // Trim colour for a given part: cycles through the theme's own palette
-  // when it has one (so the robot picks up the SAME hues as the blocks,
-  // never an arbitrary outside colour — `accent` itself is always the
-  // palette's own first entry), falls back to the flat accent for every
-  // other theme, unchanged from before.
-  const trim = (i: number) => (palette && palette.length > 0 ? palette[i % palette.length]! : accent);
+/** One dot of the aim guide, shown only while it is short of the first contact. */
+function AimDot({ index, spacing, size, originX, originY, aim, aimLen, aiming, color }: AimProps & {
+  index: number;
+  spacing: number;
+  size: number;
+}) {
+  const style = useAnimatedStyle(() => {
+    const d = spacing * (index + 1);
+    const visible = d < aimLen.value - size;
+    return {
+      // Fades a little toward the far end so the near dots lead the eye.
+      opacity: visible ? aiming.value * (1 - (0.45 * d) / Math.max(aimLen.value, 1)) : 0,
+      transform: [
+        { translateX: originX + aim.value.x * d - size / 2 },
+        { translateY: originY + aim.value.y * d - size / 2 },
+      ],
+    };
+  });
+  return (
+    <Animated.View
+      pointerEvents="none"
+      style={[
+        { position: 'absolute', left: 0, top: 0, width: size, height: size, borderRadius: size / 2, backgroundColor: color },
+        style,
+      ]}
+    />
+  );
+}
+
+/** A hollow ball where the aimed shot first touches something. */
+function AimGhost({ size, originX, originY, aim, aimLen, aiming, color }: AimProps & { size: number }) {
+  const style = useAnimatedStyle(() => ({
+    opacity: aiming.value * 0.9,
+    transform: [
+      { translateX: originX + aim.value.x * aimLen.value - size / 2 },
+      { translateY: originY + aim.value.y * aimLen.value - size / 2 },
+    ],
+  }));
+  return (
+    <Animated.View
+      pointerEvents="none"
+      style={[
+        {
+          position: 'absolute',
+          left: 0,
+          top: 0,
+          width: size,
+          height: size,
+          borderRadius: size / 2,
+          borderWidth: 2,
+          borderColor: color,
+        },
+        style,
+      ]}
+    />
+  );
+}
+
+/**
+ * A collected pickup going away: its ring swells and fades while the amount
+ * floats upward. Mounts at the pickup's own cell centre, plays once, and the
+ * parent drops it after `POP_MS`.
+ */
+function PickupPop({ left, top, size, label, color }: { left: number; top: number; size: number; label: string; color: string }) {
+  const t = useSharedValue(0);
+  useEffect(() => {
+    t.value = withTiming(1, { duration: POP_MS, easing: Easing.out(Easing.cubic) });
+  }, [t]);
+
+  const ringStyle = useAnimatedStyle(() => ({
+    opacity: 1 - t.value,
+    transform: [{ scale: 1 + t.value * 0.9 }],
+  }));
+  const labelStyle = useAnimatedStyle(() => ({
+    opacity: t.value < 0.5 ? 1 : 2 - t.value * 2,
+    transform: [{ translateY: -t.value * size * 1.4 }, { scale: 1 + t.value * 0.3 }],
+  }));
 
   return (
-    <View style={{ alignItems: 'center' }}>
-      {/* Antenna — two angled struts with a spark at each tip, the detail
-          that reads as "a small machine" rather than a plain box. */}
-      <View style={{ flexDirection: 'row', gap: 16 }}>
-        <View style={{ width: 2, height: 11, backgroundColor: trim(2), opacity: 0.9, transform: [{ rotate: '-16deg' }] }} />
-        <View style={{ width: 2, height: 11, backgroundColor: trim(3), opacity: 0.9, transform: [{ rotate: '16deg' }] }} />
-      </View>
-      <View style={{ flexDirection: 'row', gap: 10, marginTop: -2, marginBottom: 3 }}>
-        <View style={{ width: 4, height: 4, borderRadius: 2, backgroundColor: trim(2) }} />
-        <View style={{ width: 4, height: 4, borderRadius: 2, backgroundColor: trim(3) }} />
-      </View>
-
-      {/* Head — the face changes with `mood`: a smile normally, a small
-          open "o" when a block is one row from the bottom line, a frown
-          once the run is actually over. The eyes flip with the scheme like
-          the lens rim used to, for the same reason — a fixed colour
-          vanishes against one of the two backgrounds otherwise. */}
-      <View style={[{ width: 34, height: 26, borderRadius: radius.sm, alignItems: 'center', justifyContent: 'center', gap: 3 }, panel, glow]}>
-        <View style={{ flexDirection: 'row', gap: 7 }}>
-          {mood === 'sad' ? (
-            <>
-              <View style={{ width: 5, height: 1.5, borderRadius: 1, backgroundColor: lensRim }} />
-              <View style={{ width: 5, height: 1.5, borderRadius: 1, backgroundColor: lensRim }} />
-            </>
-          ) : (
-            <>
-              <View
-                style={{
-                  width: mood === 'worried' ? 6 : 5,
-                  height: mood === 'worried' ? 6 : 5,
-                  borderRadius: radius.pill,
-                  backgroundColor: lensRim,
-                }}
-              />
-              <View
-                style={{
-                  width: mood === 'worried' ? 6 : 5,
-                  height: mood === 'worried' ? 6 : 5,
-                  borderRadius: radius.pill,
-                  backgroundColor: lensRim,
-                }}
-              />
-            </>
-          )}
-        </View>
-        {mood === 'sad' ? (
-          <View
-            style={{
-              width: 9,
-              height: 4,
-              borderWidth: 1.3,
-              borderBottomWidth: 0,
-              borderColor: lensRim,
-              borderTopLeftRadius: 4,
-              borderTopRightRadius: 4,
-            }}
-          />
-        ) : mood === 'worried' ? (
-          <View style={{ width: 6, height: 6, borderRadius: 3, borderWidth: 1.3, borderColor: lensRim }} />
-        ) : (
-          <View
-            style={{
-              width: 9,
-              height: 4,
-              borderWidth: 1.3,
-              borderTopWidth: 0,
-              borderColor: lensRim,
-              borderBottomLeftRadius: 4,
-              borderBottomRightRadius: 4,
-            }}
-          />
-        )}
-      </View>
-
-      {/* Neck */}
-      <View style={{ width: 10, height: 5, backgroundColor: accent, opacity: 0.7 }} />
-
-      {/* Body — a boxier panel than the head, with a small circular badge
-          carrying the EQUIPPED BALL's own colour (moved down here now that
-          the head is a proper face — the personalisation still belongs
-          somewhere, just not on top of two eyes), and two angled shoulder
-          panels breaking the silhouette out sideways the way the
-          reference's side panels do. */}
-      <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-        <View
-          style={{
-            width: 15,
-            height: 9,
-            backgroundColor: trim(0),
-            opacity: 0.9,
-            borderRadius: radius.sm / 2,
-            transform: [{ rotate: '32deg' }],
-            marginRight: -5,
-          }}
-        />
-        <View
-          style={[
-            { width: 56, height: 36, borderRadius: radius.sm, alignItems: 'center', justifyContent: 'center' },
-            panel,
-            glow,
-          ]}>
-          <View
-            style={{
-              width: 14,
-              height: 14,
-              borderRadius: radius.pill,
-              backgroundColor: ballColor,
-              borderWidth: 1.5,
-              borderColor: lensRim,
-            }}
-          />
-        </View>
-        <View
-          style={{
-            width: 15,
-            height: 9,
-            backgroundColor: trim(1),
-            opacity: 0.9,
-            borderRadius: radius.sm / 2,
-            transform: [{ rotate: '-32deg' }],
-            marginLeft: -5,
-          }}
-        />
-      </View>
-
-      {/* Legs, angled outward, and a soft ground shadow underneath them —
-          the base the whole thing visibly stands on. */}
-      <View style={{ flexDirection: 'row', gap: 20, marginTop: 3 }}>
-        <View style={{ width: 4, height: 14, borderRadius: 2, backgroundColor: trim(4), transform: [{ rotate: '-10deg' }] }} />
-        <View style={{ width: 4, height: 14, borderRadius: 2, backgroundColor: trim(0), transform: [{ rotate: '10deg' }] }} />
-      </View>
-      <View style={{ width: 46, height: 6, borderRadius: radius.pill, backgroundColor: accent, opacity: 0.22, marginTop: 3 }} />
+    <View pointerEvents="none" style={{ position: 'absolute', left: left - size / 2, top: top - size / 2, width: size, height: size }}>
+      <Animated.View
+        style={[
+          { position: 'absolute', width: size, height: size, borderRadius: size / 2, borderWidth: 2, borderColor: color },
+          ringStyle,
+        ]}
+      />
+      <Animated.View style={[{ position: 'absolute', width: size * 2, left: -size / 2, top: 0, alignItems: 'center' }, labelStyle]}>
+        <Text variant="label" numeric numberOfLines={1} style={{ color }}>
+          {label}
+        </Text>
+      </Animated.View>
     </View>
   );
 }

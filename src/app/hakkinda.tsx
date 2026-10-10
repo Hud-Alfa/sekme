@@ -1,21 +1,19 @@
 import Constants from 'expo-constants';
-import { useRouter } from 'expo-router';
 import { View } from 'react-native';
 
+import { BackButton } from '@/components/space/BackButton';
+import { SpaceBackdrop } from '@/components/space/SpaceBackdrop';
 import { tr } from '@/i18n/tr';
-import { Card, IconButton, Screen, space, Text } from '@/ui';
+import { Card, Screen, space, Text } from '@/ui';
 
 export default function AboutScreen() {
-  const router = useRouter();
   const version = Constants.expoConfig?.version ?? '—';
 
   return (
-    <Screen scroll>
+    <Screen scroll backdrop={<SpaceBackdrop variant="calm" />}>
       <View style={{ gap: space.xl }}>
         <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
-          <IconButton accessibilityLabel={tr.common.back} tinted onPress={() => router.back()}>
-            <Text variant="heading">‹</Text>
-          </IconButton>
+          <BackButton />
           <Text variant="title">{tr.about.title}</Text>
         </View>
 

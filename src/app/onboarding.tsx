@@ -1,18 +1,23 @@
 import { useRouter } from 'expo-router';
 import { useState } from 'react';
-import { useWindowDimensions, View } from 'react-native';
+import { View } from 'react-native';
 import Animated, { FadeIn, FadeOut } from 'react-native-reanimated';
 
 import { tr } from '@/i18n/tr';
 import { useSettings } from '@/store/settings';
-import { Button, duration, radius, Screen, space, Text, useColors } from '@/ui';
+import { OnboardingArt } from '@/components/space/OnboardingArt';
+import { SpaceBackdrop } from '@/components/space/SpaceBackdrop';
+import { Button, duration, radius, Screen, space, Text, useColors, useScreen } from '@/ui';
 
 const steps = tr.onboarding.steps;
 
 export default function OnboardingScreen() {
   const router = useRouter();
   const colors = useColors();
-  const { width } = useWindowDimensions();
+  const { hero, isShort } = useScreen();
+  // The art is the page's hero, but it must leave room for two lines of
+  // text and the footer on a short phone.
+  const art = isShort ? hero * 0.7 : hero * 0.85;
   const complete = useSettings((s) => s.completeOnboarding);
   const [index, setIndex] = useState(0);
 
@@ -25,6 +30,7 @@ export default function OnboardingScreen() {
 
   return (
     <Screen
+      backdrop={<SpaceBackdrop />}
       footer={
         <View style={{ gap: space.sm }}>
           <Button
@@ -40,16 +46,9 @@ export default function OnboardingScreen() {
           entering={FadeIn.duration(duration.base)}
           exiting={FadeOut.duration(duration.fast)}
           style={{ gap: space.md }}>
-          <View
-            style={{
-              width: Math.min(width * 0.5, 200),
-              height: Math.min(width * 0.5, 200),
-              borderRadius: radius.xl,
-              backgroundColor: colors.accentSoft,
-              alignSelf: 'center',
-              marginBottom: space.xl,
-            }}
-          />
+          <View style={{ marginBottom: space.xl }}>
+            <OnboardingArt step={index} size={art} />
+          </View>
           <Text variant="title" center>
             {steps[index].title}
           </Text>
@@ -66,8 +65,8 @@ export default function OnboardingScreen() {
             <View
               key={i}
               style={{
-                width: i === index ? 24 : 8,
-                height: 8,
+                width: i === index ? space.xl : space.sm,
+                height: space.sm,
                 borderRadius: radius.pill,
                 backgroundColor: i === index ? colors.accent : colors.border,
               }}

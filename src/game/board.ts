@@ -3,6 +3,7 @@ import {
   HP_SPREAD,
   ROWS,
   TRIANGLE_CHANCE,
+  TRIANGLE_HP_SPREAD,
   ballAmount,
   ballPickupChance,
   baseHp,
@@ -67,10 +68,11 @@ export function spawnRow(turn: number, random: Random, difficulty: Difficulty): 
   const base = baseHp(turn, difficulty);
 
   for (const column of chosen) {
-    const spread = HP_SPREAD.min + random() * (HP_SPREAD.max - HP_SPREAD.min);
-    const hp = Math.max(1, Math.round(base * spread));
     const shape: BlockShape =
       random() < TRIANGLE_CHANCE ? TRIANGLE_SHAPES[Math.floor(random() * TRIANGLE_SHAPES.length)]! : 'square';
+    const band = shape === 'square' ? HP_SPREAD : TRIANGLE_HP_SPREAD;
+    const spread = band.min + random() * (band.max - band.min);
+    const hp = Math.max(1, Math.round(base * spread));
     row[column] = { kind: 'block', hp, maxHp: hp, shape };
   }
 
@@ -78,7 +80,7 @@ export function spawnRow(turn: number, random: Random, difficulty: Difficulty): 
   // balls the run stalls; with too many it plays itself.
   const free = columns.slice(count);
   if (free.length > 0 && random() < ballPickupChance(difficulty)) {
-    row[free[0]!] = { kind: 'ball', amount: ballAmount(turn) };
+    row[free[0]!] = { kind: 'ball', amount: ballAmount(turn, difficulty) };
   }
 
   if (free.length > 1 && random() < goldChance(turn)) {

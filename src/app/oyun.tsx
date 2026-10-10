@@ -1,10 +1,15 @@
-import { Redirect, useRouter } from 'expo-router';
-import { useEffect, useState } from 'react';
+import { Redirect, useFocusEffect, useRouter } from 'expo-router';
+import { useCallback, useEffect, useState } from 'react';
 import { View } from 'react-native';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { GameBoard } from '@/components/GameBoard';
+import { boardWidthFor, GameBoard } from '@/components/GameBoard';
+import { BackIcon, RestartIcon } from '@/components/space/Icons';
+import { Robot } from '@/components/space/Robot';
+import { SpaceBackdrop } from '@/components/space/SpaceBackdrop';
+import { findBall } from '@/game/balls';
 import { tr } from '@/i18n/tr';
-import { COLUMNS, ROWS } from '@/game/curve';
+import { playSfx, startMusic, stopMusic } from '@/lib/audio';
 import { formatNumber } from '@/lib/format';
 import { haptic } from '@/lib/haptics';
 import { useGame } from '@/store/game';
@@ -40,7 +45,8 @@ export default function PlayScreen() {
   const resolveTurn = useGame((s) => s.resolveTurn);
   const newGame = useGame((s) => s.newGame);
 
-  const { content, height: screenHeight } = useScreen();
+  const { content, height: screenHeight, scale, isShort } = useScreen();
+  const insets = useSafeAreaInsets();
   const [showOver, setShowOver] = useState(false);
   const [showRestart, setShowRestart] = useState(false);
   const [resolving, setResolving] = useState(false);
@@ -64,9 +70,24 @@ export default function PlayScreen() {
   useEffect(() => {
     if (game?.over) {
       haptic.error();
+      // Read at the moment the run ends rather than from the render above:
+      // this fires once, and by the next render the store has already banked
+      // the new high score, which would make every run look like a record.
+      const { game: ended, progress: banked } = useGame.getState();
+      playSfx(ended && ended.turn > banked.highScores[ended.difficulty] ? 'rekor' : 'bitti');
       setShowOver(true);
     }
   }, [game?.over]);
+
+  // Music belongs to this screen, not the app: it starts when the board is in
+  // front of someone and stops the moment they leave, so the menu and the
+  // store stay silent and nothing keeps playing off-screen.
+  useFocusEffect(
+    useCallback(() => {
+      startMusic();
+      return stopMusic;
+    }, []),
+  );
 
   if (!onboardingDone) return <Redirect href="/onboarding" />;
   // Landed here without a run — home is what decides whether to resume one
@@ -76,7 +97,7 @@ export default function PlayScreen() {
   // The board has to fit whatever is left after the header, on the shortest
   // phone as well as the tallest. Nothing here is a fixed number: the width
   // is capped by the column count and by the measured frame height.
-  const boardWidth = Math.min(content, (frameHeight / ROWS) * COLUMNS);
+  const boardWidth = boardWidthFor(frameHeight, content);
 
   const isNewRecord = game.turn >= progress.highScores[game.difficulty];
 
@@ -94,7 +115,7 @@ export default function PlayScreen() {
   const header = (
     <View style={{ flexDirection: 'row', alignItems: 'center', gap: space.sm }}>
       <IconButton accessibilityLabel={tr.common.back} tinted onPress={() => router.back()}>
-        <Text variant="heading">‹</Text>
+        <BackIcon size={scale(22)} color={colors.text} />
       </IconButton>
       <View style={{ flex: 1, flexDirection: 'row', gap: space.xs }}>
         <StatChip label={tr.game.score} value={formatNumber(game.turn)} tone="accent" />
@@ -103,21 +124,23 @@ export default function PlayScreen() {
       </View>
       {game.over ? null : (
         <IconButton accessibilityLabel={tr.game.restart} tinted onPress={() => setShowRestart(true)}>
-          <Text variant="heading">↺</Text>
+          <RestartIcon size={scale(20)} color={colors.text} />
         </IconButton>
       )}
     </View>
   );
 
   return (
-    <Screen>
+    <Screen backdrop={<SpaceBackdrop variant="calm" />}>
       {/* The board is column-width-bound, not height-bound — on a 7-wide
           board there is always slack left over on a tall phone. Rather than
           push that slack to one edge, GameBoard now draws its own frame the
           full measured height and fills it — bordered, on-theme, with a
           faint grid under the empty rows — so what used to be bare black
           reads as the arena's own design instead of leftover space. */}
-      <View style={{ flex: 1, alignItems: 'center' }} onLayout={(e) => setFrameHeight(e.nativeEvent.layout.height)}>
+      <View
+        style={{ flex: 1, alignItems: 'center', marginBottom: insets.bottom + space.sm }}
+        onLayout={(e) => setFrameHeight(e.nativeEvent.layout.height)}>
         <GameBoard
           board={game.board}
           ballCount={game.balls + liveBonus.balls}
@@ -144,6 +167,17 @@ export default function PlayScreen() {
               else here is a plain result, on purpose, so this stays worth
               noticing per `tasarim-sistemi`'s "don't inflate celebration". */}
           {isNewRecord ? <Confetti play /> : null}
+
+          {/* The robot reacts to the run: arm up with a ball on a record,
+              a sad face otherwise — the one character the player has been
+              firing with all run, not a bare number. */}
+          <Robot
+            size={scale(isShort ? 64 : 88)}
+            accent={colors.accent}
+            ballColor={findBall(progress.selected).color}
+            mood={isNewRecord ? 'happy' : 'sad'}
+            pose={isNewRecord ? 'throw' : 'idle'}
+          />
 
           <View style={{ alignItems: 'center', gap: space.xs }}>
             <Text variant="body" color="textMuted">
@@ -235,7 +269,7 @@ function StatChip({
         borderRadius: radius.md,
         backgroundColor: colors.surfaceAlt,
       }}>
-      <Text variant="caption" color="textMuted" numberOfLines={1}>
+      <Text variant="caption" color="textMuted" numberOfLines={1} adjustsFontSizeToFit>
         {label}
       </Text>
       <Text variant="label" color={tone} numeric numberOfLines={1} adjustsFontSizeToFit>
